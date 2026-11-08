@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.venv/
+.env
+*.egg-info/
+results/raw/
+.pytest_cache/
+# audio is not committed unless its licence allows it; keep manifests + hashes instead
+data/own_recordings/
+data/downloads/
+data/conditions/
