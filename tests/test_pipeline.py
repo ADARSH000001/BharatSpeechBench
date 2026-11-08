@@ -1,5 +1,6 @@
 """End-to-end pipeline with a fake model on synthetic audio (no real ASR model needed)."""
 import json
+from pathlib import Path
 import shutil
 
 import numpy as np
@@ -31,7 +32,8 @@ class FakeProvider(ASRProvider):
 
     def _transcribe(self, wav_path, language):
         FakeProvider.calls += 1
-        clip_id, cond = wav_path.split("/")[-1][:-4], wav_path.split("/")[-2]
+        p = Path(wav_path)
+        clip_id, cond = p.stem, p.parent.name
         text = REFS[clip_id]
         if cond == "phone":
             text = " ".join(text.split()[:-1])
