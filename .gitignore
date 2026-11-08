@@ -1,11 +1,59 @@
+# Python
 __pycache__/
-*.pyc
-.venv/
-.env
+*.py[cod]
+*.pyd
+*.so
 *.egg-info/
-results/raw/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Python testing and tooling
 .pytest_cache/
-# audio is not committed unless its licence allows it; keep manifests + hashes instead
-data/own_recordings/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Local datasets and audio
 data/downloads/
+data/own_recordings/
 data/conditions/
+
+# Benchmark-generated outputs
+results/raw/
+results/processed/
+
+# Model weights and checkpoints
+models/
+*.safetensors
+*.pt
+*.pth
+*.ckpt
+*.gguf
+*.onnx
+
+# Logs
+*.log
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Operating system
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# IDE
+.idea/
+.vscode/
