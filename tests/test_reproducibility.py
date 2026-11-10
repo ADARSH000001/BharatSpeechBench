@@ -186,9 +186,66 @@ def test_whisper_provider_coverage_meta_mocked(monkeypatch):
     assert t2.meta["last_segment_end_s"] == 4.0
     assert t2.meta["coverage"] == 0.5
 
-    # Unknown duration / no segments -> coverage is None
+    # Unknown duration / no segments -> coverage is None, tokens are 0
     fake_model.transcribe.return_value = (iter([]), SimpleNamespace(language_probability=0.5))
     t3 = provider.transcribe("nonexistent.wav", "hi", audio_seconds=0.0)
     assert t3.meta["num_segments"] == 0
     assert t3.meta["last_segment_end_s"] is None
     assert t3.meta["coverage"] is None
+    assert t3.meta["total_tokens"] == 0
+    assert t3.meta["max_segment_tokens"] == 0
+
+    # Segments without .tokens attribute record None for token counts
+    assert t.meta["total_tokens"] is None
+    assert t.meta["max_segment_tokens"] is None
+
+
+def test_whisper_provider_tokens_and_decoding_options_mocked(monkeypatch):
+    import sys
+    from types import ModuleType, SimpleNamespace
+    from unittest.mock import MagicMock
+    from bharatspeechbench.providers.whisper import WhisperProvider
+
+    fake_segs = [
+        SimpleNamespace(start=0.0, end=8.0, text="पहला", tokens=[1, 2, 3, 4]),
+        SimpleNamespace(start=8.0, end=20.0, text="दूसरा", tokens=list(range(224))),
+    ]
+    fake_info = SimpleNamespace(language_probability=0.99, duration=20.0)
+    fake_model = MagicMock()
+    fake_model.transcribe.return_value = (iter(fake_segs), fake_info)
+
+    fake_fw = ModuleType("faster_whisper")
+    fake_fw.WhisperModel = MagicMock(return_value=fake_model)
+    monkeypatch.setitem(sys.modules, "faster_whisper", fake_fw)
+
+    # Defaults unchanged
+    p_def = WhisperProvider(size="small", device="cpu", compute_type="int8")
+    assert p_def.settings["vad_filter"] is False
+    assert p_def.settings["chunk_length"] is None
+    assert p_def.settings["max_new_tokens"] is None
+    t_def = p_def.transcribe("nonexistent.wav", "hi", audio_seconds=20.0)
+    assert t_def.meta["total_tokens"] == 228
+    assert t_def.meta["max_segment_tokens"] == 224
+    _, kw_def = fake_model.transcribe.call_args
+    assert "vad_filter" not in kw_def
+    assert "chunk_length" not in kw_def
+    assert "max_new_tokens" not in kw_def
+
+    # Explicit decoding options forwarded and recorded in settings
+    fake_model.transcribe.return_value = (iter(fake_segs), fake_info)
+    p_opt = WhisperProvider(
+        size="small",
+        device="cpu",
+        compute_type="int8",
+        vad_filter=True,
+        chunk_length=15,
+        max_new_tokens=200,
+    )
+    assert p_opt.settings["vad_filter"] is True
+    assert p_opt.settings["chunk_length"] == 15
+    assert p_opt.settings["max_new_tokens"] == 200
+    p_opt.transcribe("nonexistent.wav", "hi", audio_seconds=20.0)
+    _, kw_opt = fake_model.transcribe.call_args
+    assert kw_opt["vad_filter"] is True
+    assert kw_opt["chunk_length"] == 15
+    assert kw_opt["max_new_tokens"] == 200

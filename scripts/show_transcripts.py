@@ -11,6 +11,11 @@ import sys
 from pathlib import Path
 
 from bharatspeechbench.benchmark.manifest import load_manifest
+from bharatspeechbench.benchmark.reporting import (
+    TRUNCATION_LEN_RATIO_THRESHOLD,
+    TRUNCATION_MAX_SEGMENT_TOKENS,
+    check_truncation,
+)
 from bharatspeechbench.metrics.wer import per_utterance
 
 
@@ -24,7 +29,12 @@ def has_indic(text: str) -> bool:
     return any(("\u0900" <= c <= "\u097F") or ("\u0A80" <= c <= "\u0AFF") for c in text)
 
 
-def get_warnings(ref: str, hyp: str, coverage: float | None = None) -> list[str]:
+def get_warnings(
+    ref: str,
+    hyp: str,
+    coverage: float | None = None,
+    max_segment_tokens: int | float | None = None,
+) -> list[str]:
     warnings = []
     if not hyp.strip():
         warnings.append("hypothesis is empty")
@@ -36,6 +46,16 @@ def get_warnings(ref: str, hyp: str, coverage: float | None = None) -> list[str]
 
     if isinstance(coverage, (int, float)) and not isinstance(coverage, bool) and coverage < 0.85:
         warnings.append(f"low coverage ({coverage:.2f} < 0.85)")
+
+    trunc = check_truncation(ref, hyp, max_segment_tokens)
+    if trunc["truncated_by_ratio"]:
+        warnings.append(
+            f"possible truncation (norm len ratio {trunc['len_ratio_norm']:.2f} < {TRUNCATION_LEN_RATIO_THRESHOLD})"
+        )
+    if trunc["truncated_by_tokens"]:
+        warnings.append(
+            f"possible truncation (max_segment_tokens={trunc['max_segment_tokens']} >= {TRUNCATION_MAX_SEGMENT_TOKENS})"
+        )
 
     return warnings
 
@@ -91,7 +111,11 @@ def show_transcripts(
         coverage = meta.get("coverage")
         is_num_cov = isinstance(coverage, (int, float)) and not isinstance(coverage, bool)
         cov_str = f"{coverage:.2f}" if is_num_cov else "n/a"
-        print(f"  COVERAGE: {cov_str}", file=out_file)
+        total_tok = meta.get("total_tokens")
+        max_seg_tok = meta.get("max_segment_tokens")
+        tok_total_str = str(total_tok) if total_tok is not None else "n/a"
+        tok_max_str = str(max_seg_tok) if max_seg_tok is not None else "n/a"
+        print(f"  COVERAGE: {cov_str}  TOKENS: total={tok_total_str}, max_segment={tok_max_str}", file=out_file)
 
         counts = per_utterance([ref_raw], [hyp_raw], level="word", normalise=False)[0]
         print(
@@ -100,7 +124,12 @@ def show_transcripts(
             file=out_file,
         )
 
-        warnings = get_warnings(ref_raw, hyp_raw, coverage=coverage if is_num_cov else None)
+        warnings = get_warnings(
+            ref_raw,
+            hyp_raw,
+            coverage=coverage if is_num_cov else None,
+            max_segment_tokens=max_seg_tok,
+        )
         for w in warnings:
             print(f"  WARNING: {w}", file=out_file)
 

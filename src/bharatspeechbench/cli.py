@@ -93,7 +93,14 @@ def _cmd_simulate(args: argparse.Namespace) -> int:
 def _make_provider(args):
     if args.provider == "whisper":
         from .providers.whisper import WhisperProvider
-        return WhisperProvider(args.size, args.device, args.compute_type)
+        return WhisperProvider(
+            args.size,
+            args.device,
+            args.compute_type,
+            vad_filter=getattr(args, "vad_filter", False),
+            chunk_length=getattr(args, "chunk_length", None),
+            max_new_tokens=getattr(args, "max_new_tokens", None),
+        )
     raise SystemExit(f"unknown provider {args.provider!r} (available: whisper)")
 
 
@@ -179,6 +186,12 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--size", default="small", help="Whisper size: tiny, base, small, medium, large-v3")
     r.add_argument("--device", default="auto", choices=("auto", "cuda", "cpu"))
     r.add_argument("--compute-type", default="auto", help="auto, float16, int8, ...")
+    r.add_argument("--vad-filter", action="store_true", default=False,
+                   help="Whisper: enable Silero VAD filter (default: off)")
+    r.add_argument("--chunk-length", type=int, default=None,
+                   help="Whisper: audio chunk length in seconds (default: library default)")
+    r.add_argument("--max-new-tokens", type=int, default=None,
+                   help="Whisper: max new tokens per chunk (default: library default)")
     r.add_argument("--languages", nargs="+", choices=("hi", "gu", "hi-en"), default=None)
     r.add_argument("--run-id", default=None, help="reuse an id to RESUME an interrupted run")
     r.set_defaults(fn=_cmd_run)

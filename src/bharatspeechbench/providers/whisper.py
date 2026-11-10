@@ -156,13 +156,30 @@ def _package_version(name: str) -> str | None:
 class WhisperProvider(ASRProvider):
     name = "faster-whisper"
 
-    def __init__(self, size: str = "small", device: str = "auto", compute_type: str = "auto",
-                 beam_size: int = 5, download_root: str | Path | None = None):
+    def __init__(
+        self,
+        size: str = "small",
+        device: str = "auto",
+        compute_type: str = "auto",
+        beam_size: int = 5,
+        download_root: str | Path | None = None,
+        vad_filter: bool = False,
+        chunk_length: int | None = None,
+        max_new_tokens: int | None = None,
+    ):
         from faster_whisper import WhisperModel  # lazy import: optional dependency
+
+        if chunk_length is not None and int(chunk_length) <= 0:
+            raise ValueError("chunk_length must be a positive integer")
+        if max_new_tokens is not None and int(max_new_tokens) <= 0:
+            raise ValueError("max_new_tokens must be a positive integer")
 
         self._size = size
         self._device, self._compute = _resolve(device, compute_type)
         self._beam = beam_size
+        self._vad_filter = bool(vad_filter)
+        self._chunk_length = int(chunk_length) if chunk_length is not None else None
+        self._max_new_tokens = int(max_new_tokens) if max_new_tokens is not None else None
         self._model_repo = _resolve_model_repo(size)
         self._ctranslate2_version = _package_version("ctranslate2")
         self._faster_whisper_version = _package_version("faster-whisper")
@@ -183,6 +200,9 @@ class WhisperProvider(ASRProvider):
             "device": self._device,
             "compute_type": self._compute,
             "beam_size": self._beam,
+            "vad_filter": self._vad_filter,
+            "chunk_length": self._chunk_length,
+            "max_new_tokens": self._max_new_tokens,
             "decoding": "beam search, temperature 0, no initial prompt",
             "model_repo": self._model_repo,
             "model_revision": self._model_revision,
@@ -192,9 +212,20 @@ class WhisperProvider(ASRProvider):
         }
 
     def _transcribe(self, wav_path: str, language: str):
-        segments, info = self._model.transcribe(
-            wav_path, language=language, beam_size=self._beam, temperature=0.0,
-            condition_on_previous_text=False)
+        transcribe_kw: dict = {
+            "language": language,
+            "beam_size": self._beam,
+            "temperature": 0.0,
+            "condition_on_previous_text": False,
+        }
+        if self._vad_filter:
+            transcribe_kw["vad_filter"] = True
+        if self._chunk_length is not None:
+            transcribe_kw["chunk_length"] = self._chunk_length
+        if self._max_new_tokens is not None:
+            transcribe_kw["max_new_tokens"] = self._max_new_tokens
+
+        segments, info = self._model.transcribe(wav_path, **transcribe_kw)
         seg_list = list(segments)
         text = " ".join(s.text.strip() for s in seg_list)
         num_segments = len(seg_list)
@@ -220,11 +251,29 @@ class WhisperProvider(ASRProvider):
             coverage = last_segment_end_s / float(audio_dur)
         else:
             coverage = None
+
+        token_counts = [
+            len(s.tokens)
+            for s in seg_list
+            if hasattr(s, "tokens") and isinstance(getattr(s, "tokens"), (list, tuple))
+        ]
+        if not seg_list:
+            total_tokens: int | None = 0
+            max_segment_tokens: int | None = 0
+        elif len(token_counts) == len(seg_list):
+            total_tokens = int(sum(token_counts))
+            max_segment_tokens = int(max(token_counts))
+        else:
+            total_tokens = None
+            max_segment_tokens = None
+
         meta = {
             "detected_language_prob": getattr(info, "language_probability", None),
             "num_segments": num_segments,
             "last_segment_end_s": last_segment_end_s,
             "coverage": coverage,
+            "total_tokens": total_tokens,
+            "max_segment_tokens": max_segment_tokens,
         }
         return text, meta
 

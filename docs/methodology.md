@@ -34,7 +34,12 @@ Normalisation is tuned on the `dev` split only.
   Forcing Hindi for Hinglish is a choice: Whisper may answer in Devanagari or Roman script.
 - faster-whisper: beam size 5, temperature 0, no initial prompt, no conditioning on previous text.
   Device and compute type (float16 on GPU, int8 on CPU) are recorded in `config.json`; they can change scores.
-- Decoding experiments (temperature fallback, VAD, chunking) are judged on dev clips only; the test split is used once per final configuration. Any decoding change gets a new run id and is reported next to the old one.
+- Token-cap behaviour: Whisper's decoder limits generation to 224 tokens per 30 s window (`max_length = 448`). Because Whisper's byte-level BPE splits multi-byte Indic scripts (Hindi/Devanagari, Gujarati) into many tokens per word, long uninterrupted utterances can hit the 224-token cap mid-word without emitting an end-of-text or closing timestamp token. When that happens, `faster-whisper` fills in the full window/clip duration as the segment end time, so `coverage` (`last_segment_end_s / audio_seconds`) stays `1.00` and does **not** detect token-cap stops.
+- Decoding experiments (temperature fallback, VAD, chunking) are judged on `dev` clips only; the `test` split is used once per final configuration. Any decoding change gets a new run id and is reported next to the old one. Candidate decoding settings are chosen on `dev` by **truncation rate** (fewest `n_truncated` clips; ties go to the simplest variant), **not** by WER.
+- Truncation detection (constants in `src/bharatspeechbench/benchmark/reporting.py`): a succeeded clip is flagged as possibly truncated (`n_truncated`, never excluded from scores) if either:
+  (a) normalised hypothesis length / normalised reference length (characters) `< 0.8` (`TRUNCATION_LEN_RATIO_THRESHOLD = 0.8`), or
+  (b) `max_segment_tokens >= 210` (`TRUNCATION_MAX_SEGMENT_TOKENS = 210`).
+  `coverage` and `low coverage` (`coverage < 0.85`) are kept as extra columns to catch early timestamp stops, with the caveat above that `coverage` does not catch token-cap stops.
 - One un-timed warm-up call runs first so model/GPU start-up is not counted in RTF.
 - A clip that raises an error is stored with the error, excluded from scores and counted in `n_failed`.
   It is never scored as an empty transcript.

@@ -298,11 +298,12 @@ def test_low_coverage_flagged_not_excluded(dataset):
     assert s_b["n_low_coverage"] == 0
 
     report_text = paths["report"].read_text(encoding="utf-8")
-    assert "| low coverage |" in report_text
+    assert "| low coverage | truncated |" in report_text
     assert "## Possible truncation" in report_text
     trunc_section = report_text.split("## Possible truncation", 1)[1].split("\n## ", 1)[0]
-    assert "`a` (clean): coverage 0.50" in trunc_section
-    assert "hyp/ref length ratio" in trunc_section
+    assert "`a` (clean):" in trunc_section
+    assert "coverage=0.50" in trunc_section
+    assert "hyp/ref len ratio" in trunc_section
     assert "`b`" not in trunc_section
 
     # Run with all coverage == 1.0 should have n_low_coverage == 0 and no Possible truncation section
@@ -328,5 +329,77 @@ def test_low_coverage_flagged_not_excluded(dataset):
     paths2 = report_run(run_dir2, clips, tmp / "results_full_cov")
     s2 = pd.read_parquet(paths2["summary"])
     assert (s2["n_low_coverage"] == 0).all()
+    assert (s2["n_truncated"] == 0).all()
     report_text2 = paths2["report"].read_text(encoding="utf-8")
     assert "## Possible truncation" not in report_text2
+
+
+def test_truncation_detection_criteria_and_settings_resume(dataset):
+    tmp, man, _ = dataset
+    clips = load_manifest(man)
+
+    class MixedTruncProvider(ASRProvider):
+        name = "mixed"
+        model_id = "mixed-1"
+
+        def __init__(self, vad_filter: bool = False):
+            self._vad_filter = vad_filter
+
+        @property
+        def settings(self):
+            return {"vad_filter": self._vad_filter, "chunk_length": None, "max_new_tokens": None}
+
+        def _transcribe(self, wav_path, language):
+            cid = Path(wav_path).stem
+            if cid == "a":
+                # (a) 50%-length hypothesis, normal tokens, coverage 1.0 -> flagged by (a)
+                words = REFS[cid].split()[:2]
+                return " ".join(words), {
+                    "num_segments": 1, "last_segment_end_s": 2.0, "coverage": 1.0,
+                    "total_tokens": 10, "max_segment_tokens": 10,
+                }
+            if cid == "b":
+                # (b) full-length hypothesis, max_segment_tokens 224, coverage 1.0 -> flagged by (b)
+                return REFS[cid], {
+                    "num_segments": 1, "last_segment_end_s": 2.0, "coverage": 1.0,
+                    "total_tokens": 224, "max_segment_tokens": 224,
+                }
+            # (c) normal clip, coverage 0.5 alone should NOT appear in Possible truncation
+            return REFS[cid], {
+                "num_segments": 1, "last_segment_end_s": 1.0, "coverage": 0.5,
+                "total_tokens": 20, "max_segment_tokens": 20,
+            }
+
+    run_dir = tmp / "trunc_run"
+    kw = dict(root=tmp, conditions=("clean",), conditions_dir=tmp / "cond",
+              manifest_path=man, progress=lambda *_: None)
+    run_benchmark(clips, MixedTruncProvider(vad_filter=False), run_dir, **kw)
+
+    # Resume refuses if decoding settings change
+    with pytest.raises(ValueError, match="different provider_settings"):
+        run_benchmark(clips, MixedTruncProvider(vad_filter=True), run_dir, **kw)
+
+    paths = report_run(run_dir, clips, tmp / "results_trunc")
+    pc = pd.read_parquet(paths["per_clip"]).set_index("clip_id")
+    assert bool(pc.loc["a", "possibly_truncated"]) is True
+    assert bool(pc.loc["b", "possibly_truncated"]) is True
+    assert bool(pc.loc["c", "possibly_truncated"]) is False
+    assert int(pc.loc["b", "max_segment_tokens"]) == 224
+
+    s = pd.read_parquet(paths["summary"]).set_index("language")
+    assert int(s.loc["hi-en", "n_truncated"]) == 1
+    assert int(s.loc["hi", "n_truncated"]) == 1
+    assert int(s.loc["gu", "n_truncated"]) == 0
+    assert int(s.loc["hi-en", "n_clips"]) == 1
+    assert s.loc["hi-en", "wer_norm"] == pytest.approx(0.5)  # not excluded from score
+    assert int(s.loc["hi", "n_clips"]) == 1
+    assert s.loc["hi", "wer_norm"] == pytest.approx(0.0)     # not excluded from score
+
+    report_text = paths["report"].read_text(encoding="utf-8")
+    assert "## Possible truncation" in report_text
+    trunc_section = report_text.split("## Possible truncation", 1)[1].split("\n## ", 1)[0]
+    assert "`a` (clean):" in trunc_section
+    assert "norm len ratio" in trunc_section
+    assert "`b` (clean):" in trunc_section
+    assert "max_segment_tokens 224 >= 210" in trunc_section
+    assert "`c`" not in trunc_section

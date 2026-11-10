@@ -90,6 +90,7 @@ def test_show_transcripts_script(tmp_path, capsys):
         Clip(id="c2", path="c2.wav", language="gu", source="fleurs", split="test", reference="નમસ્તે દુનિયા અહીં છે", duration_s=2.0, sha256="0" * 64, licence="cc-by-4.0"),
         Clip(id="c3", path="c3.wav", language="hi", source="fleurs", split="test", reference="लंबा वाक्य जो बहुत बड़ा है", duration_s=2.0, sha256="0" * 64, licence="cc-by-4.0"),
         Clip(id="c4", path="c4.wav", language="hi", source="fleurs", split="test", reference="सामान्य वाक्य", duration_s=2.0, sha256="0" * 64, licence="cc-by-4.0"),
+        Clip(id="c5", path="c5.wav", language="hi", source="fleurs", split="test", reference="सामान्य वाक्य है", duration_s=2.0, sha256="0" * 64, licence="cc-by-4.0"),
     ]
     man = tmp_path / "manifest.jsonl"
     write_manifest(clips, man)
@@ -97,10 +98,11 @@ def test_show_transcripts_script(tmp_path, capsys):
     run_dir = tmp_path / "raw_run"
     run_dir.mkdir()
     transcripts = [
-        {"clip_id": "c1", "condition": "clean", "language": "hi", "text": "नमस्ते", "meta": {"coverage": 0.5}, "error": None},  # short + low coverage
-        {"clip_id": "c2", "condition": "phone", "language": "gu", "text": "namaste world here", "meta": {"coverage": 1.0}, "error": None},  # latin for indic, full cov
+        {"clip_id": "c1", "condition": "clean", "language": "hi", "text": "नमस्ते", "meta": {"coverage": 0.5, "total_tokens": 12, "max_segment_tokens": 12}, "error": None},  # short (a) + low coverage
+        {"clip_id": "c2", "condition": "phone", "language": "gu", "text": "namaste world here", "meta": {"coverage": 1.0, "total_tokens": 15, "max_segment_tokens": 15}, "error": None},  # latin for indic, full cov
         {"clip_id": "c3", "condition": "clean", "language": "hi", "text": "", "error": None},  # empty
         {"clip_id": "c4", "condition": "clean", "language": "hi", "text": None, "error": "RuntimeError: boom"},  # error
+        {"clip_id": "c5", "condition": "clean", "language": "hi", "text": "सामान्य वाक्य है", "meta": {"coverage": 1.0, "total_tokens": 224, "max_segment_tokens": 224}, "error": None},  # token cap (b)
     ]
     with (run_dir / "transcripts.jsonl").open("w", encoding="utf-8") as f:
         for r in transcripts:
@@ -115,6 +117,7 @@ def test_show_transcripts_script(tmp_path, capsys):
     assert "COVERAGE: 0.50" in out
     assert "WARNING: low coverage (0.50 < 0.85)" in out
     assert "WARNING: hypothesis length is less than 50% of reference length" in out
+    assert "WARNING: possible truncation (norm len ratio" in out
     assert "[c2] condition=phone" in out
     assert "COVERAGE: 1.00" in out
     assert "WARNING: hypothesis contains mostly Latin letters for an Indic reference" in out
@@ -123,7 +126,10 @@ def test_show_transcripts_script(tmp_path, capsys):
     assert "WARNING: hypothesis is empty" in out
     assert "[c4] condition=clean" in out
     assert "ERROR: RuntimeError: boom" in out
-    assert "Displayed 4 transcripts." in out
+    assert "[c5] condition=clean" in out
+    assert "TOKENS: total=224, max_segment=224" in out
+    assert "WARNING: possible truncation (max_segment_tokens=224 >= 210)" in out
+    assert "Displayed 5 transcripts." in out
 
     # Test filtering by condition
     buf_cond = StringIO()
@@ -133,3 +139,57 @@ def test_show_transcripts_script(tmp_path, capsys):
     assert "low coverage" not in out_cond
     assert "[c1] condition=clean" not in out_cond
     assert "Displayed 1 transcripts." in out_cond
+
+
+def test_cli_run_decoding_options_mocked(tmp_path, monkeypatch):
+    import shutil
+    import sys
+    from types import ModuleType, SimpleNamespace
+    from unittest.mock import MagicMock
+    import numpy as np
+    import soundfile as sf
+
+    if shutil.which("ffmpeg") is None:
+        pytest.skip("ffmpeg not installed")
+
+    wav = tmp_path / "hi.wav"
+    sf.write(wav, 0.1 * np.sin(2 * np.pi * 300 * np.arange(16000) / 16000), 16000)
+    man = tmp_path / "m.jsonl"
+    write_manifest([
+        Clip(id="h1", path="hi.wav", language="hi", source="own", split="dev",
+             reference="नमस्ते", duration_s=1.0, sha256=sha256_file(wav),
+             licence="own", speaker_consent=True)
+    ], man)
+
+    fake_segs = [SimpleNamespace(start=0.0, end=1.0, text="नमस्ते", tokens=[1, 2, 3])]
+    fake_info = SimpleNamespace(language_probability=0.99, duration=1.0)
+    fake_model = MagicMock()
+    fake_model.transcribe.side_effect = lambda *a, **kw: (iter(fake_segs), fake_info)
+    fake_fw = ModuleType("faster_whisper")
+    fake_fw.WhisperModel = MagicMock(return_value=fake_model)
+    monkeypatch.setitem(sys.modules, "faster_whisper", fake_fw)
+    monkeypatch.chdir(tmp_path)
+
+    rc = main([
+        "run", str(man),
+        "--root", str(tmp_path),
+        "--split", "dev",
+        "--conditions", "clean",
+        "--device", "cpu",
+        "--compute-type", "int8",
+        "--vad-filter",
+        "--chunk-length", "15",
+        "--max-new-tokens", "200",
+        "--run-id", "opt-test",
+    ])
+    assert rc == 0
+
+    cfg = json.loads((tmp_path / "results" / "raw" / "opt-test" / "config.json").read_text(encoding="utf-8"))
+    ps = cfg["provider_settings"]
+    assert ps["vad_filter"] is True
+    assert ps["chunk_length"] == 15
+    assert ps["max_new_tokens"] == 200
+    _, kw = fake_model.transcribe.call_args
+    assert kw["vad_filter"] is True
+    assert kw["chunk_length"] == 15
+    assert kw["max_new_tokens"] == 200

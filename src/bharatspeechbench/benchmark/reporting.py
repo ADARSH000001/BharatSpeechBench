@@ -14,11 +14,44 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from ..metrics.normalization import normalize
 from ..metrics.numbers import number_accuracy, number_counts
 from ..metrics.wer import Counts, bootstrap_ci, corpus_rate, paired_bootstrap_diff, per_utterance
 from .manifest import Clip
 
 CONDITION_ORDER = ["clean", "phone", "phone_noise_20", "phone_noise_10", "phone_noise_5"]
+TRUNCATION_LEN_RATIO_THRESHOLD = 0.8
+TRUNCATION_MAX_SEGMENT_TOKENS = 210
+
+
+def check_truncation(
+    reference: str | None,
+    hypothesis: str | None,
+    max_segment_tokens: int | float | None = None,
+) -> dict:
+    """Evaluate possible truncation via (a) normalised hyp/ref char ratio < 0.8 or (b) max_segment_tokens >= 210."""
+    norm_ref = normalize(reference or "")
+    norm_hyp = normalize(hypothesis or "")
+    len_ratio_norm = (len(norm_hyp) / len(norm_ref)) if len(norm_ref) > 0 else None
+
+    if (
+        isinstance(max_segment_tokens, (int, float))
+        and not isinstance(max_segment_tokens, bool)
+        and not pd.isna(max_segment_tokens)
+    ):
+        max_tok: int | None = int(max_segment_tokens)
+    else:
+        max_tok = None
+
+    truncated_by_ratio = len_ratio_norm is not None and len_ratio_norm < TRUNCATION_LEN_RATIO_THRESHOLD
+    truncated_by_tokens = max_tok is not None and max_tok >= TRUNCATION_MAX_SEGMENT_TOKENS
+    return {
+        "len_ratio_norm": len_ratio_norm,
+        "max_segment_tokens": max_tok,
+        "truncated_by_ratio": truncated_by_ratio,
+        "truncated_by_tokens": truncated_by_tokens,
+        "possibly_truncated": truncated_by_ratio or truncated_by_tokens,
+    }
 
 
 def _load_transcripts(run_dir: Path) -> list[dict]:
@@ -38,13 +71,16 @@ def per_clip_table(run_dir: str | Path, clips: list[Clip]) -> pd.DataFrame:
     for r in _load_transcripts(run_dir):
         meta = r.get("meta") or {}
         coverage = meta.get("coverage")
+        total_tokens = meta.get("total_tokens")
+        max_seg_tokens = meta.get("max_segment_tokens")
+        reference = ref[r["clip_id"]].reference
         base = {"clip_id": r["clip_id"], "language": r["language"], "condition": r["condition"],
                 "provider": r["provider"], "model": r["model"], "error": r["error"],
                 "audio_seconds": r["audio_seconds"], "processing_seconds": r["processing_seconds"],
-                "rtf": r["rtf"], "coverage": coverage, "hypothesis": r["text"],
-                "reference": ref[r["clip_id"]].reference, "source": ref[r["clip_id"]].source}
+                "rtf": r["rtf"], "coverage": coverage,
+                "total_tokens": total_tokens, "max_segment_tokens": max_seg_tokens,
+                "hypothesis": r["text"], "reference": reference, "source": ref[r["clip_id"]].source}
         if r["error"] is None:
-            reference = ref[r["clip_id"]].reference
             hyp = r["text"]
             for tag, norm in (("raw", False), ("norm", True)):
                 w = per_utterance([reference], [hyp], "word", norm)[0]
@@ -62,11 +98,25 @@ def per_clip_table(run_dir: str | Path, clips: list[Clip]) -> pd.DataFrame:
                     f"char_len_{tag}": ch.ref_len,
                 })
             nc = number_counts(reference, hyp)
-            base.update(num_matched=nc.matched, num_total=nc.total)
+            trunc = check_truncation(reference, hyp, max_seg_tokens)
+            base.update(
+                num_matched=nc.matched,
+                num_total=nc.total,
+                len_ratio_norm=trunc["len_ratio_norm"],
+                possibly_truncated=trunc["possibly_truncated"],
+            )
+        else:
+            base.update(len_ratio_norm=None, possibly_truncated=False)
         rows.append(base)
     df = pd.DataFrame(rows)
-    if "coverage" in df.columns:
-        df["coverage"] = pd.to_numeric(df["coverage"], errors="coerce").astype(float)
+    for col in ("coverage", "len_ratio_norm"):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").astype(float)
+    for col in ("total_tokens", "max_segment_tokens"):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
+    if "possibly_truncated" in df.columns:
+        df["possibly_truncated"] = df["possibly_truncated"].fillna(False).astype(bool)
     return df
 
 
@@ -85,9 +135,14 @@ def summary_table(per_clip: pd.DataFrame) -> pd.DataFrame:
             n_low_coverage = int((cov < 0.85).sum())
         else:
             n_low_coverage = 0
+        if len(ok) and "possibly_truncated" in ok.columns:
+            n_truncated = int(ok["possibly_truncated"].fillna(False).astype(bool).sum())
+        else:
+            n_truncated = 0
         row = {"model": model, "language": lang, "condition": cond,
                "n_clips": len(ok), "n_failed": int(len(g) - len(ok)),
-               "n_empty_hyp": n_empty, "n_low_coverage": n_low_coverage}
+               "n_empty_hyp": n_empty, "n_low_coverage": n_low_coverage,
+               "n_truncated": n_truncated}
         if len(ok):
             for kind in ("word", "char"):
                 for tag in ("raw", "norm"):
@@ -102,6 +157,10 @@ def summary_table(per_clip: pd.DataFrame) -> pd.DataFrame:
             row["number_acc"] = number_accuracy(
                 [NumberCounts(int(m), int(t)) for m, t in zip(ok["num_matched"], ok["num_total"])])
             row["rtf_median"] = float(np.median(ok["rtf"]))
+            if "len_ratio_norm" in ok.columns and ok["len_ratio_norm"].notna().any():
+                row["len_ratio_median"] = float(np.median(ok["len_ratio_norm"].dropna()))
+            else:
+                row["len_ratio_median"] = float("nan")
         else:
             row["word_sub_norm"] = 0
             row["word_del_norm"] = 0
@@ -129,17 +188,21 @@ def markdown_report(run_id: str, summary: pd.DataFrame, config: dict,
     lines += [
         "WER/CER are corpus-level (normalised unless marked raw), with a bootstrap 95% interval over clips.",
         "Small clip counts give wide intervals: do not read small gaps as real differences.", "",
-        "| language | condition | clips | failed | empty | S | D | I | WER | WER 95% CI | WER raw | CER | number acc | RTF | low coverage |",
-        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+        "| language | condition | clips | failed | empty | S | D | I | WER | WER 95% CI | WER raw | CER | number acc | RTF | low coverage | truncated |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for _, r in summary.iterrows():
         if r["n_clips"] == 0:
-            lines.append(f"| {r['language']} | {r['condition']} | 0 | {r['n_failed']} | 0 | 0 | 0 | 0 | n/a | | | | | | {r.get('n_low_coverage', 0)} |")
+            lines.append(
+                f"| {r['language']} | {r['condition']} | 0 | {r['n_failed']} | 0 | 0 | 0 | 0 | n/a | | | | | | "
+                f"{r.get('n_low_coverage', 0)} | {r.get('n_truncated', 0)} |"
+            )
             continue
         lines.append(
             f"| {r['language']} | {r['condition']} | {r['n_clips']} | {r['n_failed']} | "
             f"{r.get('n_empty_hyp', 0)} | {r.get('word_sub_norm', 0)} | {r.get('word_del_norm', 0)} | {r.get('word_ins_norm', 0)} | "
             f"{_pct(r['wer_norm'])} | {_pct(r['wer_norm_lo'])} to {_pct(r['wer_norm_hi'])} | "
-            f"{_pct(r['wer_raw'])} | {_pct(r['cer_norm'])} | {_pct(r['number_acc'])} | {r['rtf_median']:.2f} | {r.get('n_low_coverage', 0)} |")
+            f"{_pct(r['wer_raw'])} | {_pct(r['cer_norm'])} | {_pct(r['number_acc'])} | {r['rtf_median']:.2f} | "
+            f"{r.get('n_low_coverage', 0)} | {r.get('n_truncated', 0)} |")
 
     if per_clip is not None and len(per_clip):
         ok = per_clip[per_clip["error"].isna()].copy()
@@ -151,23 +214,41 @@ def markdown_report(run_id: str, summary: pd.DataFrame, config: dict,
                 wer_str = _pct(r["clip_wer"])
                 lines.append(f"- `{r['clip_id']}` ({r['condition']}): {wer_str}")
 
-            if "coverage" in ok.columns:
-                cov_num = pd.to_numeric(ok["coverage"], errors="coerce")
-                low_cov = ok[cov_num < 0.85].copy()
-                if len(low_cov):
-                    low_cov = low_cov.sort_values(by=["coverage", "clip_id"], ascending=[True, True])
-                    lines += ["", "## Possible truncation"]
-                    for _, r in low_cov.iterrows():
-                        hyp_str = str(r.get("hypothesis") or "").strip()
-                        ref_str = str(r.get("reference") or "").strip() if "reference" in r else ""
-                        ref_len = len(ref_str) if ref_str else r.get("char_len_raw")
-                        if ref_len and pd.notna(ref_len) and float(ref_len) > 0:
-                            ratio_str = f"{len(hyp_str) / float(ref_len):.2f}"
-                        else:
-                            ratio_str = "n/a"
-                        lines.append(
-                            f"- `{r['clip_id']}` ({r['condition']}): coverage {float(r['coverage']):.2f}, hyp/ref length ratio {ratio_str}"
-                        )
+            flagged = []
+            for _, r in ok.iterrows():
+                max_tok = r.get("max_segment_tokens")
+                if "reference" in r and pd.notna(r["reference"]):
+                    tr = check_truncation(str(r["reference"]), r.get("hypothesis"), max_tok)
+                else:
+                    lr = r.get("len_ratio_norm")
+                    ratio_val = float(lr) if lr is not None and pd.notna(lr) else None
+                    max_tok_int = int(max_tok) if max_tok is not None and pd.notna(max_tok) else None
+                    tr = {
+                        "len_ratio_norm": ratio_val,
+                        "max_segment_tokens": max_tok_int,
+                        "truncated_by_ratio": ratio_val is not None and ratio_val < TRUNCATION_LEN_RATIO_THRESHOLD,
+                        "truncated_by_tokens": max_tok_int is not None and max_tok_int >= TRUNCATION_MAX_SEGMENT_TOKENS,
+                    }
+                    tr["possibly_truncated"] = tr["truncated_by_ratio"] or tr["truncated_by_tokens"]
+                if tr["possibly_truncated"]:
+                    flagged.append((r, tr))
+
+            if flagged:
+                lines += ["", "## Possible truncation"]
+                for r, tr in flagged:
+                    reasons = []
+                    if tr["truncated_by_ratio"]:
+                        reasons.append(f"norm len ratio {tr['len_ratio_norm']:.2f} < {TRUNCATION_LEN_RATIO_THRESHOLD}")
+                    if tr["truncated_by_tokens"]:
+                        reasons.append(f"max_segment_tokens {tr['max_segment_tokens']} >= {TRUNCATION_MAX_SEGMENT_TOKENS}")
+                    ratio_str = f"{tr['len_ratio_norm']:.2f}" if tr["len_ratio_norm"] is not None else "n/a"
+                    max_tok_str = str(tr["max_segment_tokens"]) if tr["max_segment_tokens"] is not None else "n/a"
+                    cov_val = r.get("coverage")
+                    cov_str = f"{float(cov_val):.2f}" if cov_val is not None and pd.notna(cov_val) else "n/a"
+                    lines.append(
+                        f"- `{r['clip_id']}` ({r['condition']}): {'; '.join(reasons)} "
+                        f"(hyp/ref len ratio={ratio_str}, max_segment_tokens={max_tok_str}, coverage={cov_str})"
+                    )
 
         lines += ["", "## Paired comparison vs clean"]
         languages = sorted(per_clip["language"].unique())
