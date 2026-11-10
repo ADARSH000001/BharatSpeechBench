@@ -51,6 +51,11 @@ Number accuracy = matched digit sequences / digit sequences in the reference (se
 It only compares digits, so a model that writes a number as words is scored wrong; write references with digits.
 It is reported only if the reference text contains numbers, so record scripted clips that do.
 
+## Script policy
+- Primary WER and CER are **script-sensitive on purpose**: writing Gujarati in Devanagari or Latin script counts as errors against the Gujarati reference script.
+- `script_match` (`(letters in expected script) / (all letters)`, Devanagari for `hi`, Gujarati for `gu`, skipped/`n/a` for `hi-en`; ignoring digits and punctuation) and `dominant_script` are secondary diagnostic signals.
+- For `gu` only, `wer_folded` / `cer_folded` provide a secondary folded metric (`approximate: ignores script, not spelling conventions`) by mapping Devanagari letters, vowel signs, anusvara, chandrabindu, visarga, nukta, avagraha, and virama in the hypothesis to matching Gujarati codepoints (`+0x180`); unmapped Devanagari characters (and all Latin text) remain unchanged, and Latin output remains an error.
+
 ## Paired comparisons
 Comparisons between conditions are strictly paired on identical clips that succeeded in both conditions.
 The paired 95% bootstrap confidence interval resamples clip indices jointly across both conditions,
@@ -61,7 +66,7 @@ If fewer than 5 paired clips exist, intervals are not computed ("too few clips f
 Every run stores `bsb env --seed N --manifest FILE` output: Python and package versions, OS, CPU,
 RAM, GPU, ffmpeg version, git commit, git dirty status, seed, and the manifest checksum. Audio checksums live in the manifest.
 `config.json` records complete settings, model revision, and parameters.
-- `git_dirty`: Records whether uncommitted modifications existed in the working tree when the run was made (`true`, `false`, or `null` if git is unavailable). Reports display a warning whenever a run is executed on a dirty tree. Git dirty status is strictly recorded for provenance and does not block run resumption.
+- `git_dirty`: Uses `git status --porcelain --untracked-files=no` so only modified or staged **tracked** files mark a run dirty (`true`), while untracked files (such as local runs or scratch notes) are ignored (`false`; `null` if git is unavailable). Reports display a warning whenever a run is executed with uncommitted tracked changes. Git dirty status is strictly recorded for provenance and does not block run resumption.
 - `model_revision`: Captures the exact commit hash of the model weights from the local cache. If the commit hash cannot be resolved, `model_revision` is set to `null` and a descriptive `model_revision_reason` is stored explaining why (e.g. cache directory missing or cache layout unrecognized).
 Speaker-disjoint rule: dev and test splits must remain strictly speaker-disjoint (`speaker_id` must not appear in both splits).
 
@@ -83,6 +88,7 @@ AI4Bharat model card and pin the commit hash if loading uses `trust_remote_code=
 
 ## OPEN
 - Hinglish reference script (Devanagari vs Roman) and how model output is mapped to it.
+- Hinglish and Latin-script references: transliteration policy undecided.
 - English words inside Hindi references are written in Latin script in FLEURS raw transcripts, while Whisper often outputs Devanagari. Decide the policy before quoting numbers.
 - Whisper model size; IndicConformer revision.
 - Number accuracy: needs clips that contain numbers (record scripted ones).

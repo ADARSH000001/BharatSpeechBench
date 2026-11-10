@@ -403,3 +403,88 @@ def test_truncation_detection_criteria_and_settings_resume(dataset):
     assert "`b` (clean):" in trunc_section
     assert "max_segment_tokens 224 >= 210" in trunc_section
     assert "`c`" not in trunc_section
+
+
+def test_script_match_and_folded_wer_gu_and_hi(dataset):
+    tmp, man, noise = dataset
+    clips = load_manifest(man)
+
+    class ScriptProvider(ASRProvider):
+        name = "script"
+        model_id = "script-1"
+
+        def _transcribe(self, wav_path, language):
+            p = Path(wav_path)
+            cid, cond = p.stem, p.parent.name
+            if cid == "c":
+                if cond == "clean":
+                    # Exact Devanagari transliteration of gu reference "આજે 5 વાગ્યે આવજો"
+                    return "आजे 5 वाग्ये आवजो", {}
+                # Phone: Latin hypothesis -> not folded, remains error
+                return "aaje 5 vagye aavjo", {}
+            return REFS[cid], {}
+
+    run_dir = tmp / "script_run"
+    run_benchmark(
+        clips,
+        ScriptProvider(),
+        run_dir,
+        root=tmp,
+        conditions=("clean", "phone"),
+        noise_wav=noise,
+        conditions_dir=tmp / "cond",
+        manifest_path=man,
+        progress=lambda *_: None,
+    )
+    paths = report_run(run_dir, clips, tmp / "results_script")
+
+    pc = pd.read_parquet(paths["per_clip"])
+    gu_clean = pc[(pc["clip_id"] == "c") & (pc["condition"] == "clean")].iloc[0]
+    gu_phone = pc[(pc["clip_id"] == "c") & (pc["condition"] == "phone")].iloc[0]
+    hi_clean = pc[(pc["clip_id"] == "b") & (pc["condition"] == "clean")].iloc[0]
+    hien_clean = pc[(pc["clip_id"] == "a") & (pc["condition"] == "clean")].iloc[0]
+
+    assert gu_clean["script_match"] == 0.0
+    assert gu_clean["dominant_script"] == "Devanagari"
+    assert int(gu_clean["word_err_norm"]) == 3   # primary stays script-sensitive
+    assert int(gu_clean["word_err_folded"]) == 0
+    assert int(gu_clean["char_err_folded"]) == 0
+
+    assert gu_phone["script_match"] == 0.0
+    assert gu_phone["dominant_script"] == "Latin"
+    assert int(gu_phone["word_err_folded"]) == 3  # Latin untouched, still 3 errors
+
+    assert hi_clean["script_match"] == 1.0
+    assert hi_clean["dominant_script"] == "Devanagari"
+    assert pd.isna(hi_clean["word_err_folded"])
+
+    assert pd.isna(hien_clean["script_match"])
+
+    s = pd.read_parquet(paths["summary"])
+    s_gu_clean = s[(s["language"] == "gu") & (s["condition"] == "clean")].iloc[0]
+    s_gu_phone = s[(s["language"] == "gu") & (s["condition"] == "phone")].iloc[0]
+    s_hi_clean = s[(s["language"] == "hi") & (s["condition"] == "clean")].iloc[0]
+    s_hien_clean = s[(s["language"] == "hi-en") & (s["condition"] == "clean")].iloc[0]
+
+    assert s_gu_clean["wer_norm"] == pytest.approx(0.75)
+    assert s_gu_clean["wer_folded"] == pytest.approx(0.0)
+    assert s_gu_clean["cer_folded"] == pytest.approx(0.0)
+    assert s_gu_clean["script_match_mean"] == pytest.approx(0.0)
+
+    assert s_gu_phone["wer_folded"] == pytest.approx(0.75)  # Latin untouched
+    assert s_hi_clean["script_match_mean"] == pytest.approx(1.0)
+    assert pd.isna(s_hi_clean["wer_folded"])
+    assert pd.isna(s_hien_clean["script_match_mean"])
+
+    report_text = paths["report"].read_text(encoding="utf-8")
+    assert "wer_folded" in report_text and "cer_folded" in report_text
+    assert "approximate: ignores script, not spelling conventions" in report_text
+    # Check hi row leaves folded cells empty
+    hi_lines = [ln for ln in report_text.splitlines() if ln.startswith("| hi | clean |")]
+    assert len(hi_lines) == 1
+    cells = [c.strip() for c in hi_lines[0].split("|")[1:-1]]
+    assert cells[12] == "" and cells[13] == ""
+    hien_lines = [ln for ln in report_text.splitlines() if ln.startswith("| hi-en | clean |")]
+    assert len(hien_lines) == 1
+    hien_cells = [c.strip() for c in hien_lines[0].split("|")[1:-1]]
+    assert hien_cells[12] == "" and hien_cells[13] == "" and hien_cells[14] == "n/a"

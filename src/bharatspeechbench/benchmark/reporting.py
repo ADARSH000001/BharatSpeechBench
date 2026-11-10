@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from ..metrics.normalization import normalize
+from ..metrics.normalization import fold_devanagari_to_gujarati, normalize, script_stats
 from ..metrics.numbers import number_accuracy, number_counts
 from ..metrics.wer import Counts, bootstrap_ci, corpus_rate, paired_bootstrap_diff, per_utterance
 from .manifest import Clip
@@ -99,20 +99,44 @@ def per_clip_table(run_dir: str | Path, clips: list[Clip]) -> pd.DataFrame:
                 })
             nc = number_counts(reference, hyp)
             trunc = check_truncation(reference, hyp, max_seg_tokens)
+            sm, dom = script_stats(hyp, r["language"])
             base.update(
                 num_matched=nc.matched,
                 num_total=nc.total,
                 len_ratio_norm=trunc["len_ratio_norm"],
                 possibly_truncated=trunc["possibly_truncated"],
+                script_match=sm,
+                dominant_script=dom,
             )
+            if r["language"] == "gu":
+                folded_hyp = fold_devanagari_to_gujarati(hyp)
+                wf = per_utterance([reference], [folded_hyp], "word", True)[0]
+                chf = per_utterance([reference], [folded_hyp], "char", True)[0]
+                base.update(
+                    word_err_folded=wf.errors,
+                    word_len_folded=wf.ref_len,
+                    char_err_folded=chf.errors,
+                    char_len_folded=chf.ref_len,
+                )
+            else:
+                base.update(word_err_folded=None, word_len_folded=None, char_err_folded=None, char_len_folded=None)
         else:
-            base.update(len_ratio_norm=None, possibly_truncated=False)
+            base.update(
+                len_ratio_norm=None,
+                possibly_truncated=False,
+                script_match=None,
+                dominant_script=None,
+                word_err_folded=None,
+                word_len_folded=None,
+                char_err_folded=None,
+                char_len_folded=None,
+            )
         rows.append(base)
     df = pd.DataFrame(rows)
-    for col in ("coverage", "len_ratio_norm"):
+    for col in ("coverage", "len_ratio_norm", "script_match"):
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce").astype(float)
-    for col in ("total_tokens", "max_segment_tokens"):
+    for col in ("total_tokens", "max_segment_tokens", "word_err_folded", "word_len_folded", "char_err_folded", "char_len_folded"):
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
     if "possibly_truncated" in df.columns:
@@ -161,10 +185,28 @@ def summary_table(per_clip: pd.DataFrame) -> pd.DataFrame:
                 row["len_ratio_median"] = float(np.median(ok["len_ratio_norm"].dropna()))
             else:
                 row["len_ratio_median"] = float("nan")
+            if "script_match" in ok.columns and ok["script_match"].notna().any():
+                row["script_match_mean"] = float(ok["script_match"].dropna().mean())
+            else:
+                row["script_match_mean"] = float("nan")
+            if (
+                lang == "gu"
+                and "word_err_folded" in ok.columns
+                and ok["word_len_folded"].notna().any()
+                and ok["word_len_folded"].sum() > 0
+            ):
+                row["wer_folded"] = float(ok["word_err_folded"].sum() / ok["word_len_folded"].sum())
+                row["cer_folded"] = float(ok["char_err_folded"].sum() / ok["char_len_folded"].sum())
+            else:
+                row["wer_folded"] = float("nan")
+                row["cer_folded"] = float("nan")
         else:
             row["word_sub_norm"] = 0
             row["word_del_norm"] = 0
             row["word_ins_norm"] = 0
+            row["script_match_mean"] = float("nan")
+            row["wer_folded"] = float("nan")
+            row["cer_folded"] = float("nan")
         out.append(row)
     df = pd.DataFrame(out)
     df["_c"] = df["condition"].map({c: i for i, c in enumerate(CONDITION_ORDER)}).fillna(99)
@@ -173,6 +215,10 @@ def summary_table(per_clip: pd.DataFrame) -> pd.DataFrame:
 
 def _pct(x) -> str:
     return "n/a" if x is None or pd.isna(x) else f"{100 * x:.1f}%"
+
+
+def _pct_or_blank(x) -> str:
+    return "" if x is None or pd.isna(x) else f"{100 * x:.1f}%"
 
 
 def markdown_report(run_id: str, summary: pd.DataFrame, config: dict,
@@ -187,13 +233,14 @@ def markdown_report(run_id: str, summary: pd.DataFrame, config: dict,
         lines += ["WARNING: uncommitted changes when this run was made.", ""]
     lines += [
         "WER/CER are corpus-level (normalised unless marked raw), with a bootstrap 95% interval over clips.",
+        "`wer_folded` / `cer_folded` (Gujarati only; approximate: ignores script, not spelling conventions).",
         "Small clip counts give wide intervals: do not read small gaps as real differences.", "",
-        "| language | condition | clips | failed | empty | S | D | I | WER | WER 95% CI | WER raw | CER | number acc | RTF | low coverage | truncated |",
-        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+        "| language | condition | clips | failed | empty | S | D | I | WER | WER 95% CI | WER raw | CER | wer_folded | cer_folded | script match | number acc | RTF | low coverage | truncated |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for _, r in summary.iterrows():
         if r["n_clips"] == 0:
             lines.append(
-                f"| {r['language']} | {r['condition']} | 0 | {r['n_failed']} | 0 | 0 | 0 | 0 | n/a | | | | | | "
+                f"| {r['language']} | {r['condition']} | 0 | {r['n_failed']} | 0 | 0 | 0 | 0 | n/a | | | | | | n/a | | | "
                 f"{r.get('n_low_coverage', 0)} | {r.get('n_truncated', 0)} |"
             )
             continue
@@ -201,7 +248,9 @@ def markdown_report(run_id: str, summary: pd.DataFrame, config: dict,
             f"| {r['language']} | {r['condition']} | {r['n_clips']} | {r['n_failed']} | "
             f"{r.get('n_empty_hyp', 0)} | {r.get('word_sub_norm', 0)} | {r.get('word_del_norm', 0)} | {r.get('word_ins_norm', 0)} | "
             f"{_pct(r['wer_norm'])} | {_pct(r['wer_norm_lo'])} to {_pct(r['wer_norm_hi'])} | "
-            f"{_pct(r['wer_raw'])} | {_pct(r['cer_norm'])} | {_pct(r['number_acc'])} | {r['rtf_median']:.2f} | "
+            f"{_pct(r['wer_raw'])} | {_pct(r['cer_norm'])} | "
+            f"{_pct_or_blank(r.get('wer_folded'))} | {_pct_or_blank(r.get('cer_folded'))} | "
+            f"{_pct(r.get('script_match_mean'))} | {_pct(r['number_acc'])} | {r['rtf_median']:.2f} | "
             f"{r.get('n_low_coverage', 0)} | {r.get('n_truncated', 0)} |")
 
     if per_clip is not None and len(per_clip):

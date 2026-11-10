@@ -93,9 +93,16 @@ def test_git_dirty_detection(monkeypatch, tmp_path):
     from bharatspeechbench.benchmark.reporting import markdown_report
     import pandas as pd
 
-    # Clean repo mock
-    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, stdout="", stderr=""))
+    # Clean repo mock (verifies --untracked-files=no is passed)
+    seen_cmds = []
+
+    def fake_clean(cmd, *args, **kwargs):
+        seen_cmds.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_clean)
     assert _git_dirty() is False
+    assert "--untracked-files=no" in seen_cmds[0]
 
     # Dirty repo mock
     monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, stdout=" M file.py\n", stderr=""))
@@ -103,6 +110,8 @@ def test_git_dirty_detection(monkeypatch, tmp_path):
 
     # Git unavailable mock
     monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: subprocess.CompletedProcess(args, 128, stdout="", stderr="fatal: not a git repo"))
+    assert _git_dirty() is None
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: (_ for _ in ()).throw(FileNotFoundError("no git")))
     assert _git_dirty() is None
 
     # Markdown report header includes warning when dirty
@@ -223,6 +232,7 @@ def test_whisper_provider_tokens_and_decoding_options_mocked(monkeypatch):
     assert p_def.settings["vad_filter"] is False
     assert p_def.settings["chunk_length"] is None
     assert p_def.settings["max_new_tokens"] is None
+    assert p_def.settings["initial_prompt"] is None
     t_def = p_def.transcribe("nonexistent.wav", "hi", audio_seconds=20.0)
     assert t_def.meta["total_tokens"] == 228
     assert t_def.meta["max_segment_tokens"] == 224
@@ -230,6 +240,7 @@ def test_whisper_provider_tokens_and_decoding_options_mocked(monkeypatch):
     assert "vad_filter" not in kw_def
     assert "chunk_length" not in kw_def
     assert "max_new_tokens" not in kw_def
+    assert "initial_prompt" not in kw_def
 
     # Explicit decoding options forwarded and recorded in settings
     fake_model.transcribe.return_value = (iter(fake_segs), fake_info)
@@ -240,12 +251,50 @@ def test_whisper_provider_tokens_and_decoding_options_mocked(monkeypatch):
         vad_filter=True,
         chunk_length=15,
         max_new_tokens=200,
+        initial_prompt="આ એક ગુજરાતી વાક્ય છે.",
     )
     assert p_opt.settings["vad_filter"] is True
     assert p_opt.settings["chunk_length"] == 15
     assert p_opt.settings["max_new_tokens"] == 200
-    p_opt.transcribe("nonexistent.wav", "hi", audio_seconds=20.0)
+    assert p_opt.settings["initial_prompt"] == "આ એક ગુજરાતી વાક્ય છે."
+    p_opt.transcribe("nonexistent.wav", "gu", audio_seconds=20.0)
     _, kw_opt = fake_model.transcribe.call_args
     assert kw_opt["vad_filter"] is True
     assert kw_opt["chunk_length"] == 15
     assert kw_opt["max_new_tokens"] == 200
+    assert kw_opt["initial_prompt"] == "આ એક ગુજરાતી વાક્ય છે."
+
+
+def test_git_dirty_real_repo_ignores_untracked(tmp_path):
+    import shutil
+    import subprocess
+    import pytest
+    from bharatspeechbench.utils.reproducibility import _git_dirty
+
+    if shutil.which("git") is None:
+        pytest.skip("git not installed")
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True, capture_output=True)
+
+    tracked = repo / "tracked.txt"
+    tracked.write_text("v1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True, capture_output=True)
+    assert _git_dirty(cwd=repo) is False
+
+    # Untracked file only -> still clean (False)
+    (repo / "untracked.txt").write_text("hello\n", encoding="utf-8")
+    assert _git_dirty(cwd=repo) is False
+
+    # Modified tracked file -> dirty (True)
+    tracked.write_text("v2\n", encoding="utf-8")
+    assert _git_dirty(cwd=repo) is True
+
+    # Non-git directory -> None
+    non_git = tmp_path / "not_a_repo"
+    non_git.mkdir()
+    assert _git_dirty(cwd=non_git) is None

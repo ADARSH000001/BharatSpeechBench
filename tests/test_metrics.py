@@ -90,3 +90,50 @@ def test_paired_bootstrap_diff():
     # Different length raises ValueError
     with pytest.raises(ValueError, match="same length"):
         paired_bootstrap_diff(counts_a, counts_a[:1])
+
+
+def test_script_stats_and_dominant():
+    from bharatspeechbench.metrics.normalization import script_stats
+
+    # Pure Gujarati (ignores Gujarati digits & punctuation)
+    sm, dom = script_stats("દિવસમાં ૧૨.", "gu")
+    assert sm == 1.0 and dom == "Gujarati"
+
+    # Pure Devanagari for gu reference -> 0.0 match, dominant Devanagari
+    sm2, dom2 = script_stats("नमस्ते। १२", "gu")
+    assert sm2 == 0.0 and dom2 == "Devanagari"
+
+    # Pure Devanagari for hi -> 1.0 match
+    sm3, dom3 = script_stats("नमस्ते।", "hi")
+    assert sm3 == 1.0 and dom3 == "Devanagari"
+
+    # Mixed Gujarati + Latin ("ab પક" -> 2 Latin + 2 Gujarati)
+    sm4, dom4 = script_stats("ab પક", "gu")
+    assert sm4 == pytest.approx(0.5)
+    assert dom4 in ("Gujarati", "Latin")
+
+    sm5, dom5 = script_stats("hello ન", "gu")
+    assert sm5 == pytest.approx(1 / 6)
+    assert dom5 == "Latin"
+
+    # hi-en skips script_match (None), still identifies dominant or None
+    sm6, dom6 = script_stats("आज workers आए", "hi-en")
+    assert sm6 is None and dom6 == "Latin"
+
+    # Digits/punctuation only -> (None, None)
+    assert script_stats("1234 !?", "gu") == (None, None)
+
+
+def test_fold_devanagari_to_gujarati():
+    from bharatspeechbench.metrics.normalization import fold_devanagari_to_gujarati
+
+    folded = fold_devanagari_to_gujarati("दिवसमां")
+    assert folded == "દિવસમાં"
+    assert per_utterance(["દિવસમાં"], [folded], "word", True)[0].errors == 0
+    assert per_utterance(["દિવસમાં"], [folded], "char", True)[0].errors == 0
+
+    # Latin text untouched
+    assert fold_devanagari_to_gujarati("Hello World 123") == "Hello World 123"
+
+    # Devanagari characters without Gujarati counterpart stay unmapped (not turned into rupee/Arabic marks)
+    assert fold_devanagari_to_gujarati("। क़ ॱ ॺ") == "। क़ ॱ ॺ"

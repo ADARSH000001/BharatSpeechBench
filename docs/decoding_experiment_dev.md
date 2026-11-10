@@ -52,3 +52,28 @@ Values computed directly from `results/processed/dev-whisper-small-*_per_clip.pa
 - **No variant eliminates truncation**: `n_truncated = 2` persists under both `default` and `--vad-filter` (`fleurs-hi-9195457276131503091` `clean` via normalised length ratio `< 0.8` with `max_segment_tokens` = 107 / 100, and `fleurs-gu-10938797483603452297` `phone` via both length ratio `0.66 < 0.8` and `max_segment_tokens = 224` on a 14.1 s clip).
 - Note on Gujarati WER (`>100%`): in both clean and phone conditions, `whisper-small` frequently outputs Latin/Devanagari/corrupted tokens for Gujarati, causing substitutions + insertions to exceed reference word count; `num_matched`/`number_acc` on `gu` `clean` went from `0.0%` to `100.0%` under VAD on the tiny subset of digit-bearing items, unrelated to truncation.
 
+---
+
+## Gujarati Initial-Prompt Experiment (`--languages gu`, `clean` + `phone`, CPU `int8`)
+- Manifest: `data/manifests/dev.jsonl` (`split="dev"`, `--languages gu`, 10 clips x 2 conditions = 20 clip-conditions per variant).
+- Prior `dev-whisper-small-default` lacked `"initial_prompt": null` in `provider_settings` (and had `languages=null`), so Variant (A) was cleanly rerun with matching settings as `dev-whisper-small-gu-default`.
+- Variants:
+  - **(A) `default`**: `dev-whisper-small-gu-default` (`--initial-prompt` omitted / `None`)
+  - **(E) `initial-prompt`**: `dev-whisper-small-gu-prompt` (`--initial-prompt "આ એક ગુજરાતી વાક્ય છે."`, neutral Gujarati sentence not in FLEURS)
+- Pre-registered selection rule: choose the variant with higher `script_match_mean` on `gu`; if the gap is `< 0.1`, choose `(A) default`.
+- Folded columns below (`wer_folded` / `cer_folded`) are **approximate: ignores script, not spelling conventions**.
+
+| variant | condition | clips | script_match_mean | n_truncated | WER | CER | wer_folded | cer_folded |
+|---|---|---|---|---|---|---|---|---|
+| (A) default (`dev-whisper-small-gu-default`) | clean | 10 | 0.0% | 0 | 118.3% | 92.5% | 102.1% | 46.3% |
+| (A) default (`dev-whisper-small-gu-default`) | phone | 10 | 0.0% | 1 | 116.2% | 92.3% | 100.5% | 45.7% |
+| **(A) default (overall clean+phone)** | **all** | **20** | **0.0%** | **1** | **117.3%** | **92.4%** | **101.3%** | **46.0%** |
+| (E) `--initial-prompt` (`dev-whisper-small-gu-prompt`) | clean | 10 | 100.0% | 9 | 160.2% | 82.6% | 160.2% | 82.6% |
+| (E) `--initial-prompt` (`dev-whisper-small-gu-prompt`) | phone | 10 | 100.0% | 9 | 152.4% | 84.6% | 152.4% | 84.6% |
+| **(E) `--initial-prompt` (overall clean+phone)** | **all** | **20** | **100.0%** | **18** | **156.3%** | **83.6%** | **156.3%** | **83.6%** |
+
+### Outcome & Caveat
+- **Rule selection**: **(E) `--initial-prompt`** (`script_match_mean = 1.000` vs `0.000`, gap = `1.000 >= 0.1`).
+- **Severe truncation side effect**: Prompting Gujarati script drives `n_truncated` from **1/20** (`5%`) up to **18/20** (`90%`) and increases `wer_folded` from **101.3%** to **156.3%** (RTF roughly doubles from `0.41-0.43` to `0.80-0.81`). Whisper's GPT-2 byte-level BPE splits Gujarati characters into ~2-3 byte tokens per character, hitting the 224-token per-chunk cap on nearly every clip. Defaults remain unchanged (`initial_prompt=None`); `test` and `pilot` splits were not touched.
+
+

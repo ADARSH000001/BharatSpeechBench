@@ -89,9 +89,13 @@ def _git_commit() -> str | None:
         return None
 
 
-def _git_dirty() -> bool | None:
+def _git_dirty(cwd: str | Path | None = None) -> bool | None:
+    """Return True if any tracked file is modified or staged; ignore untracked files."""
     try:
-        r = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True, timeout=10)
+        r = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=no"],
+            capture_output=True, text=True, timeout=10, cwd=cwd,
+        )
         return bool(r.stdout.strip()) if r.returncode == 0 else None
     except (OSError, subprocess.SubprocessError):
         return None

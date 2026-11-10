@@ -166,6 +166,7 @@ class WhisperProvider(ASRProvider):
         vad_filter: bool = False,
         chunk_length: int | None = None,
         max_new_tokens: int | None = None,
+        initial_prompt: str | None = None,
     ):
         from faster_whisper import WhisperModel  # lazy import: optional dependency
 
@@ -180,6 +181,7 @@ class WhisperProvider(ASRProvider):
         self._vad_filter = bool(vad_filter)
         self._chunk_length = int(chunk_length) if chunk_length is not None else None
         self._max_new_tokens = int(max_new_tokens) if max_new_tokens is not None else None
+        self._initial_prompt = initial_prompt
         self._model_repo = _resolve_model_repo(size)
         self._ctranslate2_version = _package_version("ctranslate2")
         self._faster_whisper_version = _package_version("faster-whisper")
@@ -203,6 +205,7 @@ class WhisperProvider(ASRProvider):
             "vad_filter": self._vad_filter,
             "chunk_length": self._chunk_length,
             "max_new_tokens": self._max_new_tokens,
+            "initial_prompt": self._initial_prompt,
             "decoding": "beam search, temperature 0, no initial prompt",
             "model_repo": self._model_repo,
             "model_revision": self._model_revision,
@@ -224,6 +227,8 @@ class WhisperProvider(ASRProvider):
             transcribe_kw["chunk_length"] = self._chunk_length
         if self._max_new_tokens is not None:
             transcribe_kw["max_new_tokens"] = self._max_new_tokens
+        if self._initial_prompt is not None:
+            transcribe_kw["initial_prompt"] = self._initial_prompt
 
         segments, info = self._model.transcribe(wav_path, **transcribe_kw)
         seg_list = list(segments)

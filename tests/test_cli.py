@@ -115,11 +115,14 @@ def test_show_transcripts_script(tmp_path, capsys):
 
     assert "[c1] condition=clean" in out
     assert "COVERAGE: 0.50" in out
+    assert "SCRIPT: dominant=Devanagari, match=1.00" in out
     assert "WARNING: low coverage (0.50 < 0.85)" in out
     assert "WARNING: hypothesis length is less than 50% of reference length" in out
     assert "WARNING: possible truncation (norm len ratio" in out
     assert "[c2] condition=phone" in out
     assert "COVERAGE: 1.00" in out
+    assert "SCRIPT: dominant=Latin, match=0.00" in out
+    assert "WARNING: low script match (0.00 < 0.50)" in out
     assert "WARNING: hypothesis contains mostly Latin letters for an Indic reference" in out
     assert "[c3] condition=clean" in out
     assert "COVERAGE: n/a" in out
@@ -180,6 +183,7 @@ def test_cli_run_decoding_options_mocked(tmp_path, monkeypatch):
         "--vad-filter",
         "--chunk-length", "15",
         "--max-new-tokens", "200",
+        "--initial-prompt", "આ એક ગુજરાતી વાક્ય છે.",
         "--run-id", "opt-test",
     ])
     assert rc == 0
@@ -189,7 +193,9 @@ def test_cli_run_decoding_options_mocked(tmp_path, monkeypatch):
     assert ps["vad_filter"] is True
     assert ps["chunk_length"] == 15
     assert ps["max_new_tokens"] == 200
+    assert ps["initial_prompt"] == "આ એક ગુજરાતી વાક્ય છે."
     _, kw = fake_model.transcribe.call_args
     assert kw["vad_filter"] is True
     assert kw["chunk_length"] == 15
     assert kw["max_new_tokens"] == 200
+    assert kw["initial_prompt"] == "આ એક ગુજરાતી વાક્ય છે."

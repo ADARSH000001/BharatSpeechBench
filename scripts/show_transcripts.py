@@ -16,6 +16,7 @@ from bharatspeechbench.benchmark.reporting import (
     TRUNCATION_MAX_SEGMENT_TOKENS,
     check_truncation,
 )
+from bharatspeechbench.metrics.normalization import script_stats
 from bharatspeechbench.metrics.wer import per_utterance
 
 
@@ -34,6 +35,7 @@ def get_warnings(
     hyp: str,
     coverage: float | None = None,
     max_segment_tokens: int | float | None = None,
+    script_match: float | None = None,
 ) -> list[str]:
     warnings = []
     if not hyp.strip():
@@ -46,6 +48,9 @@ def get_warnings(
 
     if isinstance(coverage, (int, float)) and not isinstance(coverage, bool) and coverage < 0.85:
         warnings.append(f"low coverage ({coverage:.2f} < 0.85)")
+
+    if isinstance(script_match, (int, float)) and not isinstance(script_match, bool) and script_match < 0.5:
+        warnings.append(f"low script match ({script_match:.2f} < 0.50)")
 
     trunc = check_truncation(ref, hyp, max_segment_tokens)
     if trunc["truncated_by_ratio"]:
@@ -117,6 +122,10 @@ def show_transcripts(
         tok_max_str = str(max_seg_tok) if max_seg_tok is not None else "n/a"
         print(f"  COVERAGE: {cov_str}  TOKENS: total={tok_total_str}, max_segment={tok_max_str}", file=out_file)
 
+        sm, dom = script_stats(hyp_raw, lang or "")
+        sm_str = f"{sm:.2f}" if sm is not None else "n/a"
+        print(f"  SCRIPT: dominant={dom or 'n/a'}, match={sm_str}", file=out_file)
+
         counts = per_utterance([ref_raw], [hyp_raw], level="word", normalise=False)[0]
         print(
             f"  COUNTS: S={counts.substitutions} D={counts.deletions} I={counts.insertions} "
@@ -129,6 +138,7 @@ def show_transcripts(
             hyp_raw,
             coverage=coverage if is_num_cov else None,
             max_segment_tokens=max_seg_tok,
+            script_match=sm,
         )
         for w in warnings:
             print(f"  WARNING: {w}", file=out_file)

@@ -100,6 +100,7 @@ def _make_provider(args):
             vad_filter=getattr(args, "vad_filter", False),
             chunk_length=getattr(args, "chunk_length", None),
             max_new_tokens=getattr(args, "max_new_tokens", None),
+            initial_prompt=getattr(args, "initial_prompt", None),
         )
     raise SystemExit(f"unknown provider {args.provider!r} (available: whisper)")
 
@@ -192,6 +193,8 @@ def main(argv: list[str] | None = None) -> int:
                    help="Whisper: audio chunk length in seconds (default: library default)")
     r.add_argument("--max-new-tokens", type=int, default=None,
                    help="Whisper: max new tokens per chunk (default: library default)")
+    r.add_argument("--initial-prompt", default=None,
+                   help="Whisper: optional initial prompt text for the first window (default: None)")
     r.add_argument("--languages", nargs="+", choices=("hi", "gu", "hi-en"), default=None)
     r.add_argument("--run-id", default=None, help="reuse an id to RESUME an interrupted run")
     r.set_defaults(fn=_cmd_run)
