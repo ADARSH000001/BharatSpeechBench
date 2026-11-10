@@ -15,7 +15,7 @@ import sys
 from collections import Counter
 
 from . import __version__
-from .benchmark.manifest import load_manifest, verify_audio_hashes
+from .benchmark.manifest import check_speakers, load_manifest, verify_audio_hashes
 from .utils.hashing import sha256_file
 from .utils.reproducibility import capture_environment
 
@@ -36,6 +36,10 @@ def _cmd_check_manifest(args: argparse.Namespace) -> int:
     for key in ("language", "source", "split"):
         counts = Counter(getattr(c, key) for c in clips)
         print(f"  {key}: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))
+    n_spk, overlap = check_speakers(clips)
+    print(f"  speakers: {n_spk} distinct")
+    if overlap:
+        print(f"WARNING: speaker_id in both dev and test: {', '.join(sorted(overlap))}")
     if args.verify_audio:
         problems = verify_audio_hashes(clips, args.root)
         for p in problems:
@@ -59,7 +63,13 @@ def _cmd_simulate(args: argparse.Namespace) -> int:
     from .audio.conditions import ensure_condition
     from .utils.hashing import sha256_file
 
-    clips = [c for c in load_manifest(args.manifest) if args.split in (None, c.split)]
+    all_clips = load_manifest(args.manifest)
+    split_counts = Counter(c.split for c in all_clips)
+    if args.split is not None and split_counts.get(args.split, 0) == 0:
+        counts_str = ", ".join(f"{k}: {v}" for k, v in sorted(split_counts.items()))
+        print(f"ERROR: no clips match split {args.split!r} (available splits: {counts_str}); try --split dev", file=sys.stderr)
+        return 1
+    clips = [c for c in all_clips if args.split in (None, c.split)]
     noise_sha = sha256_file(args.noise) if args.noise else None
     out = f"{args.out}/seed{args.seed}-{(noise_sha or 'nonoise')[:8]}"
     for c in clips[: args.limit or None]:
@@ -89,11 +99,15 @@ def _cmd_run(args: argparse.Namespace) -> int:
         return 1
     provider = _make_provider(args)
     run_id = args.run_id or f"{datetime.now():%Y%m%d-%H%M%S}-{provider.model_id}"
-    run_dir = run_benchmark(
-        clips, provider, f"results/raw/{run_id}", root=args.root, conditions=_conditions(args),
-        noise_wav=args.noise, conditions_dir=args.out, split=args.split,
-        languages=tuple(args.languages) if args.languages else None, limit=args.limit,
-        seed=args.seed, manifest_path=args.manifest)
+    try:
+        run_dir = run_benchmark(
+            clips, provider, f"results/raw/{run_id}", root=args.root, conditions=_conditions(args),
+            noise_wav=args.noise, conditions_dir=args.out, split=args.split,
+            languages=tuple(args.languages) if args.languages else None, limit=args.limit,
+            seed=args.seed, manifest_path=args.manifest)
+    except ValueError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 1
     print(f"raw results: {run_dir}\nnext: bsb report {run_dir} --manifest {args.manifest}")
     return 0
 

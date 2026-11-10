@@ -3,9 +3,7 @@
 Benchmark Indian-language speech recognition (Hindi, Gujarati, Hinglish) under clean,
 telephone-quality and noisy audio. Local models only: no API keys, no paid services.
 
-**Status: pipeline complete for Whisper; no published results yet.** Manifest, audio conditions, runner, scoring,
-reports and a read-only dashboard work and are tested with a fake model. The Whisper provider has not yet been
-run on real audio in CI. IndicConformer is next. Read `docs/methodology.md` before quoting any number.
+**Status: Pipeline complete; 37+ tests pass locally; Whisper not yet run on real audio; no published results.**
 
 ## Quick start
 ```bash

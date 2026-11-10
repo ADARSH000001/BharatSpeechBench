@@ -31,6 +31,15 @@ class Clip:
     sha256: str
     licence: str
     speaker_consent: bool | None = None
+    speaker_id: str | None = None
+
+
+def check_speakers(clips: list[Clip]) -> tuple[int, set[str]]:
+    """Return (n_distinct_speakers, overlapping_speakers_between_dev_and_test)."""
+    speakers = {c.speaker_id for c in clips if c.speaker_id is not None}
+    dev_spk = {c.speaker_id for c in clips if c.split == "dev" and c.speaker_id is not None}
+    test_spk = {c.speaker_id for c in clips if c.split == "test" and c.speaker_id is not None}
+    return len(speakers), dev_spk & test_spk
 
 
 def load_manifest(path: str | Path) -> list[Clip]:

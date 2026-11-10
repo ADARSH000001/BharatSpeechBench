@@ -48,3 +48,8 @@ class ASRProvider(ABC):
     @abstractmethod
     def model_id(self) -> str:
         """Exact model identifier including size/revision, recorded with every result."""
+
+    @property
+    def settings(self) -> dict:
+        """Key model settings and environment versions recorded in run config."""
+        return {}

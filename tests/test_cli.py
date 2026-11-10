@@ -34,3 +34,47 @@ def test_check_manifest_invalid_returns_1(tmp_path):
 def test_env_command_outputs_json(capsys):
     assert main(["env", "--seed", "3"]) == 0
     assert json.loads(capsys.readouterr().out)["seed"] == 3
+
+
+def test_check_manifest_speaker_count_and_overlap_warning(tmp_path, capsys):
+    m = tmp_path / "m.jsonl"
+    c1 = Clip(id="1", path="a.wav", language="hi", source="fleurs", split="dev",
+              reference="x", duration_s=1.0, sha256="0" * 64, licence="CC-BY-4.0", speaker_id="speaker_X")
+    c2 = Clip(id="2", path="b.wav", language="hi", source="fleurs", split="test",
+              reference="y", duration_s=1.0, sha256="0" * 64, licence="CC-BY-4.0", speaker_id="speaker_X")
+    write_manifest([c1, c2], m)
+    rc = main(["check-manifest", str(m)])
+    assert rc == 0
+    captured = capsys.readouterr()
+    assert "speakers: 1 distinct" in captured.out
+    assert "WARNING: speaker_id in both dev and test: speaker_X" in captured.out
+
+
+def test_no_clips_match_split_error_message(tmp_path, capsys):
+    from bharatspeechbench.benchmark.runner import run_benchmark
+    from bharatspeechbench.providers.base import ASRProvider
+
+    class DummyProvider(ASRProvider):
+        name = "dummy"
+        model_id = "dummy-1"
+        def _transcribe(self, p, l): return "ok", {}
+
+    m = tmp_path / "m.jsonl"
+    c1 = Clip(id="1", path="a.wav", language="hi", source="fleurs", split="dev",
+              reference="x", duration_s=1.0, sha256="0" * 64, licence="CC-BY-4.0")
+    write_manifest([c1], m)
+
+    # runner ValueError
+    with pytest.raises(ValueError) as exc:
+        run_benchmark([c1], DummyProvider(), tmp_path / "out", split="test")
+    err_msg = str(exc.value)
+    assert "no clips match split 'test'" in err_msg
+    assert "dev: 1" in err_msg
+    assert "--split dev" in err_msg
+
+    # cli simulate error message
+    rc = main(["simulate", str(m), "--split", "test"])
+    assert rc == 1
+    err_out = capsys.readouterr().err
+    assert "no clips match split 'test'" in err_out
+    assert "--split dev" in err_out

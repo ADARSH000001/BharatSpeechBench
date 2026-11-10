@@ -34,7 +34,8 @@ def _done(path: Path) -> set[tuple[str, str]]:
     for line in path.read_text(encoding="utf-8").splitlines():
         if line.strip():
             r = json.loads(line)
-            done.add((r["clip_id"], r["condition"]))
+            if r.get("error") is None:
+                done.add((r["clip_id"], r["condition"]))
     return done
 
 
@@ -55,6 +56,16 @@ def run_benchmark(
 ) -> Path:
     for c in conditions:
         parse_condition(c)
+
+    from collections import Counter
+
+    split_counts = Counter(c.split for c in clips)
+    if split not in split_counts or split_counts[split] == 0:
+        counts_str = ", ".join(f"{k}: {v}" for k, v in sorted(split_counts.items()))
+        raise ValueError(
+            f"no clips match split {split!r} (available splits: {counts_str}); try --split dev"
+        )
+
     if any(parse_condition(c)[0] == "phone_noise" for c in conditions) and noise_wav is None:
         raise ValueError("noise conditions need a noise file (--noise)")
 
@@ -70,6 +81,9 @@ def run_benchmark(
     noise_sha = sha256_file(noise_wav) if noise_wav else None
     # cache key includes seed + noise file, so changing either can never reuse stale audio
     cond_dir = Path(conditions_dir) / f"seed{seed}-{(noise_sha or 'nonoise')[:8]}"
+    if noise_wav:
+        from ..audio.conditions import ensure_clean_noise
+        ensure_clean_noise(noise_wav, cond_dir)
 
     cfg_path = run_dir / "config.json"
     config = {

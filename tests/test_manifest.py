@@ -80,3 +80,28 @@ def test_empty_reference_rejected(tmp_path):
     f.write_text(json.dumps(row) + "\n")
     with pytest.raises(ValueError, match="empty reference"):
         load_manifest(f)
+
+
+def test_optional_speaker_id_and_check_speakers(tmp_path):
+    from bharatspeechbench.benchmark.manifest import check_speakers
+
+    # Old manifest without speaker_id still loads
+    p = tmp_path / "old.jsonl"
+    write_manifest([_clip(id="c1", split="dev"), _clip(id="c2", split="test")], p)
+    clips = load_manifest(p)
+    assert clips[0].speaker_id is None
+    n_spk, overlap = check_speakers(clips)
+    assert n_spk == 0 and len(overlap) == 0
+
+    # Manifest with speaker_id
+    p2 = tmp_path / "with_spk.jsonl"
+    write_manifest([
+        _clip(id="c1", split="dev", speaker_id="spk_A"),
+        _clip(id="c2", split="dev", speaker_id="spk_B"),
+        _clip(id="c3", split="test", speaker_id="spk_A"),  # overlap!
+        _clip(id="c4", split="test", speaker_id="spk_C"),
+    ], p2)
+    clips2 = load_manifest(p2)
+    n_spk2, overlap2 = check_speakers(clips2)
+    assert n_spk2 == 3
+    assert overlap2 == {"spk_A"}

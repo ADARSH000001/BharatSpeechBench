@@ -47,19 +47,32 @@ def to_clean(in_audio: str | Path, out_wav: str | Path) -> Path:
     return out_wav
 
 
+def ensure_clean_noise(noise_wav: str | Path, out_dir: str | Path) -> Path:
+    """Convert noise_wav to 16 kHz mono PCM16 once per run/cache directory and reuse it."""
+    dest = Path(out_dir) / "_noise_16k.wav"
+    if not dest.is_file():
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        to_clean(noise_wav, dest)
+    return dest
+
+
 def make_condition(src: str | Path, out_wav: str | Path, condition: str, clip_id: str,
-                   noise_wav: str | Path | None = None, seed: int = 0) -> Path:
+                   noise_wav: str | Path | None = None, seed: int = 0,
+                   clean_noise_path: str | Path | None = None) -> Path:
     kind, snr = parse_condition(condition)
     out_wav = Path(out_wav)
     if kind == "clean":
         return to_clean(src, out_wav)
     if kind == "phone":
         return simulate_phone(src, out_wav, MODEL_SR)
-    if noise_wav is None:
+    if noise_wav is None and clean_noise_path is None:
         raise ValueError(f"{condition} needs a noise file (--noise)")
     with tempfile.TemporaryDirectory() as tmp:
         clean = to_clean(src, Path(tmp) / "clean.wav")
-        noise = to_clean(noise_wav, Path(tmp) / "noise.wav")
+        if clean_noise_path and Path(clean_noise_path).is_file():
+            noise = Path(clean_noise_path)
+        else:
+            noise = to_clean(noise_wav, Path(tmp) / "noise.wav")
         speech, _ = sf.read(clean)
         noise_a, _ = sf.read(noise)
         mixed = mix_at_snr(speech, noise_a, snr, seed=clip_seed(seed, clip_id))
@@ -73,9 +86,12 @@ def condition_path(out_dir: str | Path, condition: str, clip_id: str) -> Path:
 
 
 def ensure_condition(src: str | Path, out_dir: str | Path, condition: str, clip_id: str,
-                     noise_wav: str | Path | None = None, seed: int = 0, force: bool = False) -> Path:
+                     noise_wav: str | Path | None = None, seed: int = 0, force: bool = False,
+                     clean_noise_path: str | Path | None = None) -> Path:
     """Create the condition file unless it already exists (conditions are re-creatable, so cached)."""
     out = condition_path(out_dir, condition, clip_id)
     if force or not out.is_file():
-        make_condition(src, out, condition, clip_id, noise_wav, seed)
+        if clean_noise_path is None and noise_wav is not None:
+            clean_noise_path = ensure_clean_noise(noise_wav, out_dir)
+        make_condition(src, out, condition, clip_id, noise_wav, seed, clean_noise_path=clean_noise_path)
     return out

@@ -36,3 +36,57 @@ def test_cer_and_bootstrap():
     lo, hi = bootstrap_ci(c, n_boot=500)
     assert 0.0 <= lo <= corpus_rate(c) <= hi <= 1.0
     assert bootstrap_ci(c, n_boot=500) == (lo, hi)   # seeded: reproducible
+
+
+def test_counts_substitutions_deletions_insertions():
+    # 1 sub ("b" -> "x"), 1 ins ("extra")
+    c = per_utterance(["a b c"], ["a x c extra"], "word", normalise=False)[0]
+    assert c.substitutions == 1
+    assert c.deletions == 0
+    assert c.insertions == 1
+    assert c.errors == c.substitutions + c.deletions + c.insertions == 2
+    assert c.ref_len == 3
+
+    # Deletions only
+    c2 = per_utterance(["a b c d"], ["a d"], "word", normalise=False)[0]
+    assert c2.substitutions == 0
+    assert c2.deletions == 2
+    assert c2.insertions == 0
+    assert c2.errors == c2.substitutions + c2.deletions + c2.insertions == 2
+    assert c2.ref_len == 4
+
+    # Empty hypothesis = all deletions
+    c_empty = per_utterance(["first second third"], [""], "word", normalise=False)[0]
+    assert c_empty.substitutions == 0
+    assert c_empty.deletions == 3
+    assert c_empty.insertions == 0
+    assert c_empty.errors == 3
+    assert c_empty.ref_len == 3
+
+
+def test_paired_bootstrap_diff():
+    from bharatspeechbench.metrics.wer import Counts, paired_bootstrap_diff
+
+    # Identical counts give diff 0 and CI (0, 0)
+    counts_a = [Counts(1, 10, substitutions=1), Counts(2, 10, deletions=2)]
+    diff, lo, hi = paired_bootstrap_diff(counts_a, counts_a, seed=0)
+    assert diff == 0.0
+    assert lo == 0.0
+    assert hi == 0.0
+
+    # Condition B strictly more errors: diff > 0 and CI strictly above 0
+    c_clean = [Counts(0, 10) for _ in range(30)]
+    c_phone = [Counts(3, 10, substitutions=3) for _ in range(30)]
+    diff, lo, hi = paired_bootstrap_diff(c_clean, c_phone, seed=42)
+    assert diff == pytest.approx(0.3)
+    assert lo > 0.0
+    assert hi >= lo
+
+    # Same seed gives same result
+    res1 = paired_bootstrap_diff(c_clean, c_phone, seed=123)
+    res2 = paired_bootstrap_diff(c_clean, c_phone, seed=123)
+    assert res1 == res2
+
+    # Different length raises ValueError
+    with pytest.raises(ValueError, match="same length"):
+        paired_bootstrap_diff(counts_a, counts_a[:1])
