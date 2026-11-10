@@ -151,3 +151,44 @@ def test_whisper_provider_settings_mocked(monkeypatch, tmp_path):
     assert "faster_whisper_version" in s
     assert s["device"] == "cpu"
     assert s["compute_type"] == "int8"
+
+
+def test_whisper_provider_coverage_meta_mocked(monkeypatch):
+    import sys
+    from types import ModuleType, SimpleNamespace
+    from unittest.mock import MagicMock
+    from bharatspeechbench.providers.whisper import WhisperProvider
+
+    fake_segs = [
+        SimpleNamespace(start=0.0, end=2.0, text="पहला"),
+        SimpleNamespace(start=2.0, end=5.0, text="दूसरा"),
+    ]
+    fake_info = SimpleNamespace(language_probability=0.99, duration=10.0)
+    fake_model = MagicMock()
+    fake_model.transcribe.return_value = (iter(fake_segs), fake_info)
+
+    fake_fw = ModuleType("faster_whisper")
+    fake_fw.WhisperModel = MagicMock(return_value=fake_model)
+    monkeypatch.setitem(sys.modules, "faster_whisper", fake_fw)
+
+    provider = WhisperProvider(size="small", device="cpu", compute_type="int8")
+    t = provider.transcribe("nonexistent.wav", "hi", audio_seconds=10.0)
+    assert t.text == "पहला दूसरा"
+    assert t.meta["num_segments"] == 2
+    assert t.meta["last_segment_end_s"] == 5.0
+    assert t.meta["coverage"] == 0.5
+
+    # When duration is missing from info, WhisperProvider.transcribe falls back to audio_seconds
+    fake_info_no_dur = SimpleNamespace(language_probability=0.95)
+    fake_model.transcribe.return_value = (iter([SimpleNamespace(start=0.0, end=4.0, text="ok")]), fake_info_no_dur)
+    t2 = provider.transcribe("nonexistent.wav", "hi", audio_seconds=8.0)
+    assert t2.meta["num_segments"] == 1
+    assert t2.meta["last_segment_end_s"] == 4.0
+    assert t2.meta["coverage"] == 0.5
+
+    # Unknown duration / no segments -> coverage is None
+    fake_model.transcribe.return_value = (iter([]), SimpleNamespace(language_probability=0.5))
+    t3 = provider.transcribe("nonexistent.wav", "hi", audio_seconds=0.0)
+    assert t3.meta["num_segments"] == 0
+    assert t3.meta["last_segment_end_s"] is None
+    assert t3.meta["coverage"] is None

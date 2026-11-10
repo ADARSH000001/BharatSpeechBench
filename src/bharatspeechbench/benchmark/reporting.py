@@ -36,10 +36,13 @@ def per_clip_table(run_dir: str | Path, clips: list[Clip]) -> pd.DataFrame:
     ref = {c.id: c for c in clips}
     rows = []
     for r in _load_transcripts(run_dir):
+        meta = r.get("meta") or {}
+        coverage = meta.get("coverage")
         base = {"clip_id": r["clip_id"], "language": r["language"], "condition": r["condition"],
                 "provider": r["provider"], "model": r["model"], "error": r["error"],
                 "audio_seconds": r["audio_seconds"], "processing_seconds": r["processing_seconds"],
-                "rtf": r["rtf"], "hypothesis": r["text"], "source": ref[r["clip_id"]].source}
+                "rtf": r["rtf"], "coverage": coverage, "hypothesis": r["text"],
+                "reference": ref[r["clip_id"]].reference, "source": ref[r["clip_id"]].source}
         if r["error"] is None:
             reference = ref[r["clip_id"]].reference
             hyp = r["text"]
@@ -61,7 +64,10 @@ def per_clip_table(run_dir: str | Path, clips: list[Clip]) -> pd.DataFrame:
             nc = number_counts(reference, hyp)
             base.update(num_matched=nc.matched, num_total=nc.total)
         rows.append(base)
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+    if "coverage" in df.columns:
+        df["coverage"] = pd.to_numeric(df["coverage"], errors="coerce").astype(float)
+    return df
 
 
 def _ci(df: pd.DataFrame, kind: str, tag: str) -> tuple[float, float]:
@@ -74,8 +80,14 @@ def summary_table(per_clip: pd.DataFrame) -> pd.DataFrame:
     for (model, lang, cond), g in per_clip.groupby(["model", "language", "condition"], sort=False):
         ok = g[g["error"].isna()]
         n_empty = int((ok["hypothesis"].fillna("").astype(str).str.strip() == "").sum()) if len(ok) else 0
+        if len(ok) and "coverage" in ok.columns:
+            cov = pd.to_numeric(ok["coverage"], errors="coerce")
+            n_low_coverage = int((cov < 0.85).sum())
+        else:
+            n_low_coverage = 0
         row = {"model": model, "language": lang, "condition": cond,
-               "n_clips": len(ok), "n_failed": int(len(g) - len(ok)), "n_empty_hyp": n_empty}
+               "n_clips": len(ok), "n_failed": int(len(g) - len(ok)),
+               "n_empty_hyp": n_empty, "n_low_coverage": n_low_coverage}
         if len(ok):
             for kind in ("word", "char"):
                 for tag in ("raw", "norm"):
@@ -117,17 +129,17 @@ def markdown_report(run_id: str, summary: pd.DataFrame, config: dict,
     lines += [
         "WER/CER are corpus-level (normalised unless marked raw), with a bootstrap 95% interval over clips.",
         "Small clip counts give wide intervals: do not read small gaps as real differences.", "",
-        "| language | condition | clips | failed | empty | S | D | I | WER | WER 95% CI | WER raw | CER | number acc | RTF |",
-        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+        "| language | condition | clips | failed | empty | S | D | I | WER | WER 95% CI | WER raw | CER | number acc | RTF | low coverage |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for _, r in summary.iterrows():
         if r["n_clips"] == 0:
-            lines.append(f"| {r['language']} | {r['condition']} | 0 | {r['n_failed']} | 0 | 0 | 0 | 0 | n/a | | | | | |")
+            lines.append(f"| {r['language']} | {r['condition']} | 0 | {r['n_failed']} | 0 | 0 | 0 | 0 | n/a | | | | | | {r.get('n_low_coverage', 0)} |")
             continue
         lines.append(
             f"| {r['language']} | {r['condition']} | {r['n_clips']} | {r['n_failed']} | "
             f"{r.get('n_empty_hyp', 0)} | {r.get('word_sub_norm', 0)} | {r.get('word_del_norm', 0)} | {r.get('word_ins_norm', 0)} | "
             f"{_pct(r['wer_norm'])} | {_pct(r['wer_norm_lo'])} to {_pct(r['wer_norm_hi'])} | "
-            f"{_pct(r['wer_raw'])} | {_pct(r['cer_norm'])} | {_pct(r['number_acc'])} | {r['rtf_median']:.2f} |")
+            f"{_pct(r['wer_raw'])} | {_pct(r['cer_norm'])} | {_pct(r['number_acc'])} | {r['rtf_median']:.2f} | {r.get('n_low_coverage', 0)} |")
 
     if per_clip is not None and len(per_clip):
         ok = per_clip[per_clip["error"].isna()].copy()
@@ -138,6 +150,24 @@ def markdown_report(run_id: str, summary: pd.DataFrame, config: dict,
             for _, r in top5.iterrows():
                 wer_str = _pct(r["clip_wer"])
                 lines.append(f"- `{r['clip_id']}` ({r['condition']}): {wer_str}")
+
+            if "coverage" in ok.columns:
+                cov_num = pd.to_numeric(ok["coverage"], errors="coerce")
+                low_cov = ok[cov_num < 0.85].copy()
+                if len(low_cov):
+                    low_cov = low_cov.sort_values(by=["coverage", "clip_id"], ascending=[True, True])
+                    lines += ["", "## Possible truncation"]
+                    for _, r in low_cov.iterrows():
+                        hyp_str = str(r.get("hypothesis") or "").strip()
+                        ref_str = str(r.get("reference") or "").strip() if "reference" in r else ""
+                        ref_len = len(ref_str) if ref_str else r.get("char_len_raw")
+                        if ref_len and pd.notna(ref_len) and float(ref_len) > 0:
+                            ratio_str = f"{len(hyp_str) / float(ref_len):.2f}"
+                        else:
+                            ratio_str = "n/a"
+                        lines.append(
+                            f"- `{r['clip_id']}` ({r['condition']}): coverage {float(r['coverage']):.2f}, hyp/ref length ratio {ratio_str}"
+                        )
 
         lines += ["", "## Paired comparison vs clean"]
         languages = sorted(per_clip["language"].unique())

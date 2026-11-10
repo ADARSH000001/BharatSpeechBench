@@ -34,6 +34,7 @@ Normalisation is tuned on the `dev` split only.
   Forcing Hindi for Hinglish is a choice: Whisper may answer in Devanagari or Roman script.
 - faster-whisper: beam size 5, temperature 0, no initial prompt, no conditioning on previous text.
   Device and compute type (float16 on GPU, int8 on CPU) are recorded in `config.json`; they can change scores.
+- Decoding experiments (temperature fallback, VAD, chunking) are judged on dev clips only; the test split is used once per final configuration. Any decoding change gets a new run id and is reported next to the old one.
 - One un-timed warm-up call runs first so model/GPU start-up is not counted in RTF.
 - A clip that raises an error is stored with the error, excluded from scores and counted in `n_failed`.
   It is never scored as an empty transcript.
@@ -77,6 +78,7 @@ AI4Bharat model card and pin the commit hash if loading uses `trust_remote_code=
 
 ## OPEN
 - Hinglish reference script (Devanagari vs Roman) and how model output is mapped to it.
+- English words inside Hindi references are written in Latin script in FLEURS raw transcripts, while Whisper often outputs Devanagari. Decide the policy before quoting numbers.
 - Whisper model size; IndicConformer revision.
 - Number accuracy: needs clips that contain numbers (record scripted ones).
 - Noise corpus and its licence (MUSAN, DEMAND, or your own recording).

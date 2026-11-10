@@ -198,3 +198,59 @@ def test_build_fleurs_manifest_offline(tmp_path):
         source_dirs=source_dirs,
     )
     assert [c.id for c in clips2] == [c.id for c in loaded]
+
+
+def test_build_fleurs_manifest_dev_split_offline(tmp_path, monkeypatch):
+    import tarfile
+    import numpy as np
+    import soundfile as sf
+    import scripts.build_fleurs_manifest as bfm
+
+    sr = 16000
+    n_samples = 56000  # 3.5s >= 3.0s
+    raw_dir = tmp_path / "remote"
+    raw_dir.mkdir()
+
+    tsv_files = {}
+    tar_files = {}
+    for lang, code in (("hi", "hi_in"), ("gu", "gu_in")):
+        wav_path = raw_dir / f"{lang}_dev_0.wav"
+        t = np.arange(n_samples) / sr
+        sf.write(wav_path, 0.1 * np.sin(2 * np.pi * 250 * t), sr, subtype="PCM_16")
+
+        raw_text = "देव स्प्लिट वाक्य।" if lang == "hi" else "દેવ સ્પ્લિટ વાક્ય."
+        tsv_path = raw_dir / f"{code}_dev.tsv"
+        tsv_path.write_text(f"2001\t{wav_path.name}\t{raw_text}\t{raw_text}\t...\t{n_samples}\tFEMALE\n", encoding="utf-8")
+        tsv_files[code] = tsv_path
+
+        tar_path = raw_dir / f"{code}_dev.tar.gz"
+        with tarfile.open(tar_path, "w:gz") as tar:
+            tar.add(wav_path, arcname=f"dev/{wav_path.name}")
+        tar_files[code] = tar_path
+
+    def fake_download(url: str):
+        for code in ("hi_in", "gu_in"):
+            if f"/data/{code}/dev.tsv" in url:
+                return tsv_files[code].open("rb")
+            if f"/data/{code}/audio/dev.tar.gz" in url:
+                return tar_files[code].open("rb")
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    monkeypatch.setattr(bfm, "_download_stream", fake_download)
+
+    rc = bfm.main([
+        "--lang", "hi", "gu",
+        "--split", "dev",
+        "--n", "1",
+        "--out", "downloads/fleurs",
+        "--manifest", "manifests/dev_manifest.jsonl",
+        "--root", str(tmp_path),
+    ])
+    assert rc == 0
+
+    loaded = load_manifest(tmp_path / "manifests" / "dev_manifest.jsonl")
+    assert len(loaded) == 2
+    assert {c.language for c in loaded} == {"hi", "gu"}
+    assert all(c.split == "dev" for c in loaded)
+    assert all(c.source == "fleurs" for c in loaded)
+    assert verify_audio_hashes(loaded, root=tmp_path) == []

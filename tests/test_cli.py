@@ -97,8 +97,8 @@ def test_show_transcripts_script(tmp_path, capsys):
     run_dir = tmp_path / "raw_run"
     run_dir.mkdir()
     transcripts = [
-        {"clip_id": "c1", "condition": "clean", "language": "hi", "text": "नमस्ते", "error": None},  # short (< 50%)
-        {"clip_id": "c2", "condition": "phone", "language": "gu", "text": "namaste world here", "error": None},  # latin for indic
+        {"clip_id": "c1", "condition": "clean", "language": "hi", "text": "नमस्ते", "meta": {"coverage": 0.5}, "error": None},  # short + low coverage
+        {"clip_id": "c2", "condition": "phone", "language": "gu", "text": "namaste world here", "meta": {"coverage": 1.0}, "error": None},  # latin for indic, full cov
         {"clip_id": "c3", "condition": "clean", "language": "hi", "text": "", "error": None},  # empty
         {"clip_id": "c4", "condition": "clean", "language": "hi", "text": None, "error": "RuntimeError: boom"},  # error
     ]
@@ -112,10 +112,14 @@ def test_show_transcripts_script(tmp_path, capsys):
     out = buf.getvalue()
 
     assert "[c1] condition=clean" in out
+    assert "COVERAGE: 0.50" in out
+    assert "WARNING: low coverage (0.50 < 0.85)" in out
     assert "WARNING: hypothesis length is less than 50% of reference length" in out
     assert "[c2] condition=phone" in out
+    assert "COVERAGE: 1.00" in out
     assert "WARNING: hypothesis contains mostly Latin letters for an Indic reference" in out
     assert "[c3] condition=clean" in out
+    assert "COVERAGE: n/a" in out
     assert "WARNING: hypothesis is empty" in out
     assert "[c4] condition=clean" in out
     assert "ERROR: RuntimeError: boom" in out
@@ -126,5 +130,6 @@ def test_show_transcripts_script(tmp_path, capsys):
     show_transcripts(run_dir, man, condition="phone", out_file=buf_cond)
     out_cond = buf_cond.getvalue()
     assert "[c2] condition=phone" in out_cond
+    assert "low coverage" not in out_cond
     assert "[c1] condition=clean" not in out_cond
     assert "Displayed 1 transcripts." in out_cond

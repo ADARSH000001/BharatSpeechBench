@@ -24,7 +24,7 @@ def has_indic(text: str) -> bool:
     return any(("\u0900" <= c <= "\u097F") or ("\u0A80" <= c <= "\u0AFF") for c in text)
 
 
-def get_warnings(ref: str, hyp: str) -> list[str]:
+def get_warnings(ref: str, hyp: str, coverage: float | None = None) -> list[str]:
     warnings = []
     if not hyp.strip():
         warnings.append("hypothesis is empty")
@@ -33,6 +33,9 @@ def get_warnings(ref: str, hyp: str) -> list[str]:
 
     if (has_indic(ref) or any("\u0900" <= c <= "\u0AFF" for c in ref)) and is_mostly_latin(hyp):
         warnings.append("hypothesis contains mostly Latin letters for an Indic reference")
+
+    if isinstance(coverage, (int, float)) and not isinstance(coverage, bool) and coverage < 0.85:
+        warnings.append(f"low coverage ({coverage:.2f} < 0.85)")
 
     return warnings
 
@@ -84,6 +87,12 @@ def show_transcripts(
 
         print(f"  HYP: {hyp_raw}", file=out_file)
 
+        meta = row.get("meta") or {}
+        coverage = meta.get("coverage")
+        is_num_cov = isinstance(coverage, (int, float)) and not isinstance(coverage, bool)
+        cov_str = f"{coverage:.2f}" if is_num_cov else "n/a"
+        print(f"  COVERAGE: {cov_str}", file=out_file)
+
         counts = per_utterance([ref_raw], [hyp_raw], level="word", normalise=False)[0]
         print(
             f"  COUNTS: S={counts.substitutions} D={counts.deletions} I={counts.insertions} "
@@ -91,7 +100,7 @@ def show_transcripts(
             file=out_file,
         )
 
-        warnings = get_warnings(ref_raw, hyp_raw)
+        warnings = get_warnings(ref_raw, hyp_raw, coverage=coverage if is_num_cov else None)
         for w in warnings:
             print(f"  WARNING: {w}", file=out_file)
 

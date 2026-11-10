@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .base import ASRProvider
+from .base import ASRProvider, Transcript
 
 
 def _resolve(device: str, compute_type: str) -> tuple[str, str]:
@@ -195,5 +195,47 @@ class WhisperProvider(ASRProvider):
         segments, info = self._model.transcribe(
             wav_path, language=language, beam_size=self._beam, temperature=0.0,
             condition_on_previous_text=False)
-        text = " ".join(s.text.strip() for s in segments)
-        return text, {"detected_language_prob": info.language_probability}
+        seg_list = list(segments)
+        text = " ".join(s.text.strip() for s in seg_list)
+        num_segments = len(seg_list)
+        last_end = getattr(seg_list[-1], "end", None) if seg_list else None
+        last_segment_end_s = (
+            float(last_end)
+            if isinstance(last_end, (int, float)) and not isinstance(last_end, bool)
+            else None
+        )
+        audio_dur = getattr(info, "duration", None)
+        if not (isinstance(audio_dur, (int, float)) and not isinstance(audio_dur, bool) and audio_dur > 0):
+            try:
+                import soundfile as sf
+                audio_dur = float(sf.info(wav_path).duration)
+            except Exception:  # noqa: BLE001
+                audio_dur = None
+        if (
+            last_segment_end_s is not None
+            and isinstance(audio_dur, (int, float))
+            and not isinstance(audio_dur, bool)
+            and audio_dur > 0
+        ):
+            coverage = last_segment_end_s / float(audio_dur)
+        else:
+            coverage = None
+        meta = {
+            "detected_language_prob": getattr(info, "language_probability", None),
+            "num_segments": num_segments,
+            "last_segment_end_s": last_segment_end_s,
+            "coverage": coverage,
+        }
+        return text, meta
+
+    def transcribe(self, wav_path: str, language: str, audio_seconds: float) -> Transcript:
+        t = super().transcribe(wav_path, language, audio_seconds)
+        if (
+            t.meta.get("coverage") is None
+            and t.meta.get("last_segment_end_s") is not None
+            and isinstance(audio_seconds, (int, float))
+            and not isinstance(audio_seconds, bool)
+            and audio_seconds > 0
+        ):
+            t.meta["coverage"] = float(t.meta["last_segment_end_s"]) / float(audio_seconds)
+        return t

@@ -234,7 +234,10 @@ def main(argv: list[str] | None = None) -> int:
         root=args.root,
     )
 
-    clips = load_manifest(args.manifest)
+    manifest_file = Path(args.manifest)
+    if not manifest_file.is_absolute():
+        manifest_file = Path(args.root).resolve() / manifest_file
+    clips = load_manifest(manifest_file)
     print(f"\nManifest verification: {len(clips)} clips")
     for key in ("language", "source", "split"):
         counts = Counter(getattr(c, key) for c in clips)

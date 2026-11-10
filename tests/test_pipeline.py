@@ -250,3 +250,83 @@ def test_limit_per_language(tmp_path):
     # Resume check refuses if limit_per_language changes
     with pytest.raises(ValueError, match="different limit_per_language"):
         run_benchmark(clips, SimpleProvider(), run_dir, **dict(kw, limit_per_language=1))
+
+
+def test_low_coverage_flagged_not_excluded(dataset):
+    tmp, man, _ = dataset
+    clips = load_manifest(man)
+
+    class TruncatingProvider(ASRProvider):
+        name = "trunc"
+        model_id = "trunc-1"
+
+        def _transcribe(self, wav_path, language):
+            cid = Path(wav_path).stem
+            if cid == "a":
+                # Half text, coverage = 0.5 -> flagged, still scored
+                words = REFS[cid].split()[:2]
+                return " ".join(words), {"num_segments": 1, "last_segment_end_s": 1.0, "coverage": 0.5}
+            return REFS[cid], {"num_segments": 1, "last_segment_end_s": 2.0, "coverage": 1.0}
+
+    run_dir = tmp / "cov_run"
+    run_benchmark(
+        clips,
+        TruncatingProvider(),
+        run_dir,
+        root=tmp,
+        conditions=("clean",),
+        conditions_dir=tmp / "cond",
+        manifest_path=man,
+        progress=lambda *_: None,
+    )
+    paths = report_run(run_dir, clips, tmp / "results_cov")
+
+    pc = pd.read_parquet(paths["per_clip"])
+    assert "coverage" in pc.columns
+    cov_a = pc.loc[pc["clip_id"] == "a", "coverage"].iloc[0]
+    cov_b = pc.loc[pc["clip_id"] == "b", "coverage"].iloc[0]
+    assert cov_a == pytest.approx(0.5)
+    assert cov_b == pytest.approx(1.0)
+
+    s = pd.read_parquet(paths["summary"])
+    assert "n_low_coverage" in s.columns
+    s_a = s[s["language"] == "hi-en"].iloc[0]
+    s_b = s[s["language"] == "hi"].iloc[0]
+    assert s_a["n_low_coverage"] == 1
+    assert s_a["n_clips"] == 1
+    assert s_a["wer_norm"] == pytest.approx(0.5)  # 2 of 4 words deleted -> not excluded from score
+    assert s_b["n_low_coverage"] == 0
+
+    report_text = paths["report"].read_text(encoding="utf-8")
+    assert "| low coverage |" in report_text
+    assert "## Possible truncation" in report_text
+    trunc_section = report_text.split("## Possible truncation", 1)[1].split("\n## ", 1)[0]
+    assert "`a` (clean): coverage 0.50" in trunc_section
+    assert "hyp/ref length ratio" in trunc_section
+    assert "`b`" not in trunc_section
+
+    # Run with all coverage == 1.0 should have n_low_coverage == 0 and no Possible truncation section
+    class FullProvider(ASRProvider):
+        name = "full"
+        model_id = "full-1"
+
+        def _transcribe(self, wav_path, language):
+            cid = Path(wav_path).stem
+            return REFS[cid], {"num_segments": 1, "last_segment_end_s": 2.0, "coverage": 1.0}
+
+    run_dir2 = tmp / "full_cov_run"
+    run_benchmark(
+        clips,
+        FullProvider(),
+        run_dir2,
+        root=tmp,
+        conditions=("clean",),
+        conditions_dir=tmp / "cond",
+        manifest_path=man,
+        progress=lambda *_: None,
+    )
+    paths2 = report_run(run_dir2, clips, tmp / "results_full_cov")
+    s2 = pd.read_parquet(paths2["summary"])
+    assert (s2["n_low_coverage"] == 0).all()
+    report_text2 = paths2["report"].read_text(encoding="utf-8")
+    assert "## Possible truncation" not in report_text2
