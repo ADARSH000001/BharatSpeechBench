@@ -54,41 +54,95 @@ def _resolve_model_repo(size: str) -> str:
         return _DEFAULT_MODELS.get(size, size)
 
 
-def get_model_revision(repo_id: str, cache_dir: str | Path | None = None) -> str | None:
-    """Find the commit hash from the local Hugging Face hub cache without network calls."""
+def get_model_revision_info(repo_id: str, cache_dir: str | Path | None = None) -> tuple[str | None, str | None]:
+    """Find the commit hash from the local Hugging Face hub cache without network calls.
+
+    Returns:
+        (commit_hash, None) on success, or (None, failure_reason) on failure.
+    """
+    # 1. Try huggingface_hub's official scan_cache_dir if installed
     try:
+        import huggingface_hub
+        scan_kw = {"cache_dir": str(cache_dir)} if cache_dir else {}
+        info = huggingface_hub.scan_cache_dir(**scan_kw)
+        repo = next((r for r in info.repos if r.repo_id == repo_id), None)
+        if repo and repo.revisions:
+            for rev in repo.revisions:
+                if "main" in rev.refs:
+                    return rev.commit_hash, None
+            # Fallback to newest revision by last_modified if available
+            revs = sorted(repo.revisions, key=lambda r: getattr(r, "last_modified", 0), reverse=True)
+            return revs[0].commit_hash, None
+    except Exception:  # noqa: BLE001
+        pass
+
+    # 2. Fall back to offline filesystem parsing
+    try:
+        import os
+
         if cache_dir is None:
-            try:
-                import huggingface_hub.constants as hf_const
-                cache_dir = Path(hf_const.HF_HUB_CACHE)
-            except Exception:  # noqa: BLE001
-                cache_dir = Path.home() / ".cache" / "huggingface" / "hub"
+            if "HF_HUB_CACHE" in os.environ:
+                cache_dir = Path(os.environ["HF_HUB_CACHE"])
+            elif "HF_HOME" in os.environ:
+                cache_dir = Path(os.environ["HF_HOME"]) / "hub"
+            else:
+                try:
+                    import huggingface_hub.constants as hf_const
+                    cache_dir = Path(hf_const.HF_HUB_CACHE)
+                except Exception:  # noqa: BLE001
+                    cache_dir = Path.home() / ".cache" / "huggingface" / "hub"
         else:
             cache_dir = Path(cache_dir)
 
         if not cache_dir.is_dir():
-            return None
+            return None, f"cache directory does not exist: {cache_dir}"
 
         folder_name = f"models--{repo_id.replace('/', '--')}"
         repo_dir = cache_dir / folder_name
         if not repo_dir.is_dir():
-            return None
+            return None, f"model repo folder not found in cache: {folder_name}"
 
+        # (a) Check refs/main
         refs_main = repo_dir / "refs" / "main"
         if refs_main.is_file():
             commit = refs_main.read_text(encoding="utf-8").strip()
             if commit:
-                return commit
+                return commit, None
 
+        # (b) Check any other ref in refs/
+        refs_dir = repo_dir / "refs"
+        if refs_dir.is_dir():
+            for ref_file in sorted(refs_dir.iterdir()):
+                if ref_file.is_file():
+                    c = ref_file.read_text(encoding="utf-8").strip()
+                    if c:
+                        return c, None
+
+        # (c) Check snapshots directory
         snapshots = repo_dir / "snapshots"
         if snapshots.is_dir():
             dirs = [p.name for p in snapshots.iterdir() if p.is_dir()]
             if dirs:
                 dirs.sort(key=lambda name: (snapshots / name).stat().st_mtime, reverse=True)
-                return dirs[0]
-    except Exception:  # noqa: BLE001
-        return None
-    return None
+                return dirs[0], None
+
+        # (d) Check trees directory (Windows no-symlink layout)
+        trees = repo_dir / "trees"
+        if trees.is_dir():
+            tree_files = [p.stem for p in trees.iterdir() if p.is_file() and p.suffix == ".json"]
+            if tree_files:
+                tree_files.sort(key=lambda name: (trees / f"{name}.json").stat().st_mtime, reverse=True)
+                return tree_files[0], None
+
+        return None, "cache layout not recognised: no valid refs, snapshots, or trees found"
+    except Exception as exc:  # noqa: BLE001
+        return None, f"error inspecting cache: {exc}"
+
+
+def get_model_revision(repo_id: str, cache_dir: str | Path | None = None) -> str | None:
+    """Find the commit hash from the local Hugging Face hub cache without network calls."""
+    rev, _ = get_model_revision_info(repo_id, cache_dir=cache_dir)
+    return rev
 
 
 def _package_version(name: str) -> str | None:
@@ -110,11 +164,14 @@ class WhisperProvider(ASRProvider):
         self._device, self._compute = _resolve(device, compute_type)
         self._beam = beam_size
         self._model_repo = _resolve_model_repo(size)
-        self._model_revision = get_model_revision(self._model_repo, cache_dir=download_root)
         self._ctranslate2_version = _package_version("ctranslate2")
         self._faster_whisper_version = _package_version("faster-whisper")
         kw = {"download_root": str(download_root)} if download_root else {}
         self._model = WhisperModel(size, device=self._device, compute_type=self._compute, **kw)
+        # Query cache after model load/download to detect freshly-downloaded weights
+        self._model_revision, self._model_revision_reason = get_model_revision_info(
+            self._model_repo, cache_dir=download_root
+        )
 
     @property
     def model_id(self) -> str:
@@ -129,6 +186,7 @@ class WhisperProvider(ASRProvider):
             "decoding": "beam search, temperature 0, no initial prompt",
             "model_repo": self._model_repo,
             "model_revision": self._model_revision,
+            "model_revision_reason": self._model_revision_reason,
             "ctranslate2_version": self._ctranslate2_version,
             "faster_whisper_version": self._faster_whisper_version,
         }

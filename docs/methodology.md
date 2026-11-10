@@ -53,8 +53,10 @@ If fewer than 5 paired clips exist, intervals are not computed ("too few clips f
 
 ## Reproducibility and provenance
 Every run stores `bsb env --seed N --manifest FILE` output: Python and package versions, OS, CPU,
-RAM, GPU, ffmpeg version, git commit, seed, and the manifest checksum. Audio checksums live in the manifest.
+RAM, GPU, ffmpeg version, git commit, git dirty status, seed, and the manifest checksum. Audio checksums live in the manifest.
 `config.json` records complete settings, model revision, and parameters.
+- `git_dirty`: Records whether uncommitted modifications existed in the working tree when the run was made (`true`, `false`, or `null` if git is unavailable). Reports display a warning whenever a run is executed on a dirty tree. Git dirty status is strictly recorded for provenance and does not block run resumption.
+- `model_revision`: Captures the exact commit hash of the model weights from the local cache. If the commit hash cannot be resolved, `model_revision` is set to `null` and a descriptive `model_revision_reason` is stored explaining why (e.g. cache directory missing or cache layout unrecognized).
 Speaker-disjoint rule: dev and test splits must remain strictly speaker-disjoint (`speaker_id` must not appear in both splits).
 
 ## Datasets and licences

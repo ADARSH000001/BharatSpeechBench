@@ -50,6 +50,7 @@ def run_benchmark(
     split: str = "test",
     languages: tuple[str, ...] | None = None,
     limit: int | None = None,
+    limit_per_language: int | None = None,
     seed: int = 0,
     manifest_path: str | Path | None = None,
     progress=print,
@@ -70,7 +71,16 @@ def run_benchmark(
         raise ValueError("noise conditions need a noise file (--noise)")
 
     selected = [c for c in clips if c.split == split and (languages is None or c.language in languages)]
-    if limit:
+    if limit_per_language:
+        lang_counts: dict[str, int] = {}
+        filtered = []
+        for c in selected:
+            cnt = lang_counts.get(c.language, 0)
+            if cnt < limit_per_language:
+                filtered.append(c)
+                lang_counts[c.language] = cnt + 1
+        selected = filtered
+    elif limit:
         selected = selected[:limit]
     if not selected:
         raise ValueError(f"no clips selected (split={split!r}, languages={languages})")
@@ -94,6 +104,7 @@ def run_benchmark(
         "split": split,
         "languages": list(languages) if languages else None,
         "limit": limit,
+        "limit_per_language": limit_per_language,
         "seed": seed,
         "n_clips": len(selected),
         "asr_language": ASR_LANGUAGE,
@@ -103,7 +114,7 @@ def run_benchmark(
     if cfg_path.is_file():
         old = json.loads(cfg_path.read_text(encoding="utf-8"))
         for k in ("provider", "model", "provider_settings", "conditions", "split", "languages",
-                  "limit", "seed", "noise_sha256"):
+                  "limit", "limit_per_language", "seed", "noise_sha256"):
             if old.get(k) != config[k]:
                 raise ValueError(f"run dir {run_dir} was started with a different {k}; use a new --run-id")
         if old["environment"].get("manifest_sha256") != config["environment"]["manifest_sha256"]:

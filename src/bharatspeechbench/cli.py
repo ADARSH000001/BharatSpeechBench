@@ -70,9 +70,20 @@ def _cmd_simulate(args: argparse.Namespace) -> int:
         print(f"ERROR: no clips match split {args.split!r} (available splits: {counts_str}); try --split dev", file=sys.stderr)
         return 1
     clips = [c for c in all_clips if args.split in (None, c.split)]
+    if args.limit_per_language:
+        lang_counts: dict[str, int] = {}
+        filtered = []
+        for c in clips:
+            cnt = lang_counts.get(c.language, 0)
+            if cnt < args.limit_per_language:
+                filtered.append(c)
+                lang_counts[c.language] = cnt + 1
+        clips = filtered
+    elif args.limit:
+        clips = clips[: args.limit]
     noise_sha = sha256_file(args.noise) if args.noise else None
     out = f"{args.out}/seed{args.seed}-{(noise_sha or 'nonoise')[:8]}"
-    for c in clips[: args.limit or None]:
+    for c in clips:
         for cond in _conditions(args):
             p = ensure_condition(f"{args.root}/{c.path}", out, cond, c.id, args.noise, args.seed, args.force)
             print(p)
@@ -104,6 +115,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
             clips, provider, f"results/raw/{run_id}", root=args.root, conditions=_conditions(args),
             noise_wav=args.noise, conditions_dir=args.out, split=args.split,
             languages=tuple(args.languages) if args.languages else None, limit=args.limit,
+            limit_per_language=args.limit_per_language,
             seed=args.seed, manifest_path=args.manifest)
     except ValueError as e:
         print(f"ERROR: {e}", file=sys.stderr)
@@ -131,6 +143,8 @@ def _add_audio_args(sp: argparse.ArgumentParser) -> None:
     sp.add_argument("--split", default="test", choices=("dev", "test"))
     sp.add_argument("--seed", type=int, default=0)
     sp.add_argument("--limit", type=int, default=None, help="only the first N clips (smoke test)")
+    sp.add_argument("--limit-per-language", type=int, default=None,
+                    help="first N clips per language in manifest order")
     sp.add_argument("--out", default="data/conditions", help="where generated audio is cached")
 
 

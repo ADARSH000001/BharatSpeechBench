@@ -27,13 +27,20 @@ Needs `ffmpeg` on PATH. Add `".[whisper]"` for faster-whisper and `".[app]"` for
 ## Run a benchmark
 ```bash
 bsb check-manifest data/manifests/manifest.jsonl --verify-audio
-bsb run data/manifests/manifest.jsonl --noise data/downloads/noise.wav --limit 3 --conditions clean phone  # smoke test
+
+# Smoke test across all languages (a smoke run is not a result):
+bsb run data/manifests/manifest.jsonl --conditions clean phone --limit-per-language 2 --run-id smoke-v1
+
+# Inspect raw transcripts and quality warnings:
+python scripts/show_transcripts.py results/raw/smoke-v1 --manifest data/manifests/manifest.jsonl
+
+# Full benchmark run and report:
 bsb run data/manifests/manifest.jsonl --noise data/downloads/noise.wav --run-id whisper-small-v1
 bsb report results/raw/whisper-small-v1 --manifest data/manifests/manifest.jsonl
 streamlit run app/Home.py
 ```
 Re-run the same `--run-id` to resume an interrupted run. A run refuses to continue if the model, conditions, split,
-noise file or manifest changed. `--device cpu` if the GPU fails to load (Windows needs CUDA 12 cuBLAS + cuDNN 9).
+noise file, limit, or manifest changed. Note that a smoke run is not a result. `--device cpu` if the GPU fails to load (Windows needs CUDA 12 cuBLAS + cuDNN 9).
 
 ## Layout
 ```

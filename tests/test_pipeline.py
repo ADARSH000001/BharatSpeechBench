@@ -202,3 +202,51 @@ def test_resume_retries_failed_clips_and_reporting_dedup(dataset):
     assert len(pc_ok) == 3
     assert (pc_ok["clip_id"] == "b").sum() == 1
     assert pc_ok[pc_ok["clip_id"] == "b"]["error"].isna().all()
+
+
+def test_limit_per_language(tmp_path):
+    t = np.arange(16000) / 16000
+    clips = []
+    # 3 hi and 3 gu clips
+    for i in range(3):
+        w_hi = tmp_path / f"hi_{i}.wav"
+        sf.write(w_hi, 0.1 * np.sin(2 * np.pi * 300 * t), 16000)
+        clips.append(Clip(f"hi_{i}", f"hi_{i}.wav", "hi", "own", "test", f"नमस्ते {i}", 1.0, sha256_file(w_hi), "own", True))
+
+        w_gu = tmp_path / f"gu_{i}.wav"
+        sf.write(w_gu, 0.1 * np.sin(2 * np.pi * 350 * t), 16000)
+        clips.append(Clip(f"gu_{i}", f"gu_{i}.wav", "gu", "own", "test", f"નમસ્તે {i}", 1.0, sha256_file(w_gu), "own", True))
+
+    man = tmp_path / "manifest.jsonl"
+    write_manifest(clips, man)
+
+    run_dir = tmp_path / "run_limit_per_lang"
+    kw = dict(
+        root=tmp_path,
+        conditions=("clean",),
+        conditions_dir=tmp_path / "cond",
+        manifest_path=man,
+        progress=lambda *_: None,
+        limit_per_language=2,
+    )
+
+    class SimpleProvider(ASRProvider):
+        name = "simple"
+        model_id = "simple-1"
+        def _transcribe(self, p, l): return "ok", {}
+
+    run_benchmark(clips, SimpleProvider(), run_dir, **kw)
+
+    cfg = json.loads((run_dir / "config.json").read_text(encoding="utf-8"))
+    assert cfg["limit_per_language"] == 2
+    assert cfg["n_clips"] == 4
+
+    rows = [json.loads(line) for line in (run_dir / "transcripts.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 4
+    clip_ids = [r["clip_id"] for r in rows]
+    # Selected first 2 per language in manifest order: hi_0, gu_0, hi_1, gu_1
+    assert clip_ids == ["hi_0", "gu_0", "hi_1", "gu_1"]
+
+    # Resume check refuses if limit_per_language changes
+    with pytest.raises(ValueError, match="different limit_per_language"):
+        run_benchmark(clips, SimpleProvider(), run_dir, **dict(kw, limit_per_language=1))

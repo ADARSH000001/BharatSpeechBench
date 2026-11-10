@@ -89,6 +89,14 @@ def _git_commit() -> str | None:
         return None
 
 
+def _git_dirty() -> bool | None:
+    try:
+        r = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True, timeout=10)
+        return bool(r.stdout.strip()) if r.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
 def _gpu() -> dict | None:
     try:
         import torch
@@ -113,5 +121,6 @@ def capture_environment(seed: int, manifest_path: str | Path | None = None) -> d
         "ffmpeg": _ffmpeg_version(),
         "packages": _package_versions(),
         "git_commit": _git_commit(),
+        "git_dirty": _git_dirty(),
         "manifest_sha256": sha256_file(manifest_path) if manifest_path else None,
     }

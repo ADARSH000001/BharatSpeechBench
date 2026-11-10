@@ -78,3 +78,53 @@ def test_no_clips_match_split_error_message(tmp_path, capsys):
     err_out = capsys.readouterr().err
     assert "no clips match split 'test'" in err_out
     assert "--split dev" in err_out
+
+
+def test_show_transcripts_script(tmp_path, capsys):
+    from io import StringIO
+    from scripts.show_transcripts import show_transcripts
+
+    # Create manifest
+    clips = [
+        Clip(id="c1", path="c1.wav", language="hi", source="fleurs", split="test", reference="नमस्ते दुनिया यहाँ है", duration_s=2.0, sha256="0" * 64, licence="cc-by-4.0"),
+        Clip(id="c2", path="c2.wav", language="gu", source="fleurs", split="test", reference="નમસ્તે દુનિયા અહીં છે", duration_s=2.0, sha256="0" * 64, licence="cc-by-4.0"),
+        Clip(id="c3", path="c3.wav", language="hi", source="fleurs", split="test", reference="लंबा वाक्य जो बहुत बड़ा है", duration_s=2.0, sha256="0" * 64, licence="cc-by-4.0"),
+        Clip(id="c4", path="c4.wav", language="hi", source="fleurs", split="test", reference="सामान्य वाक्य", duration_s=2.0, sha256="0" * 64, licence="cc-by-4.0"),
+    ]
+    man = tmp_path / "manifest.jsonl"
+    write_manifest(clips, man)
+
+    run_dir = tmp_path / "raw_run"
+    run_dir.mkdir()
+    transcripts = [
+        {"clip_id": "c1", "condition": "clean", "language": "hi", "text": "नमस्ते", "error": None},  # short (< 50%)
+        {"clip_id": "c2", "condition": "phone", "language": "gu", "text": "namaste world here", "error": None},  # latin for indic
+        {"clip_id": "c3", "condition": "clean", "language": "hi", "text": "", "error": None},  # empty
+        {"clip_id": "c4", "condition": "clean", "language": "hi", "text": None, "error": "RuntimeError: boom"},  # error
+    ]
+    with (run_dir / "transcripts.jsonl").open("w", encoding="utf-8") as f:
+        for r in transcripts:
+            f.write(json.dumps(r) + "\n")
+
+    buf = StringIO()
+    rc = show_transcripts(run_dir, man, out_file=buf)
+    assert rc == 0
+    out = buf.getvalue()
+
+    assert "[c1] condition=clean" in out
+    assert "WARNING: hypothesis length is less than 50% of reference length" in out
+    assert "[c2] condition=phone" in out
+    assert "WARNING: hypothesis contains mostly Latin letters for an Indic reference" in out
+    assert "[c3] condition=clean" in out
+    assert "WARNING: hypothesis is empty" in out
+    assert "[c4] condition=clean" in out
+    assert "ERROR: RuntimeError: boom" in out
+    assert "Displayed 4 transcripts." in out
+
+    # Test filtering by condition
+    buf_cond = StringIO()
+    show_transcripts(run_dir, man, condition="phone", out_file=buf_cond)
+    out_cond = buf_cond.getvalue()
+    assert "[c2] condition=phone" in out_cond
+    assert "[c1] condition=clean" not in out_cond
+    assert "Displayed 1 transcripts." in out_cond

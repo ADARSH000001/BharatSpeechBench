@@ -110,12 +110,15 @@ def markdown_report(run_id: str, summary: pd.DataFrame, config: dict,
     lines = [f"# Run `{run_id}`", "",
              f"- Provider: {config['provider']} / model `{config['model']}`  settings: {config.get('provider_settings')}",
              f"- Split: {config['split']}, conditions: {', '.join(config['conditions'])}",
-             f"- Git commit: {env.get('git_commit')}, manifest sha256: {env.get('manifest_sha256')}",
-             f"- Seed: {env.get('seed')}, GPU: {env.get('gpu')}", "",
-             "WER/CER are corpus-level (normalised unless marked raw), with a bootstrap 95% interval over clips.",
-             "Small clip counts give wide intervals: do not read small gaps as real differences.", "",
-             "| language | condition | clips | failed | empty | S | D | I | WER | WER 95% CI | WER raw | CER | number acc | RTF |",
-             "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+             f"- Git commit: {env.get('git_commit')}, git dirty: {env.get('git_dirty')}, manifest sha256: {env.get('manifest_sha256')}",
+             f"- Seed: {env.get('seed')}, GPU: {env.get('gpu')}", ""]
+    if env.get("git_dirty") is True:
+        lines += ["WARNING: uncommitted changes when this run was made.", ""]
+    lines += [
+        "WER/CER are corpus-level (normalised unless marked raw), with a bootstrap 95% interval over clips.",
+        "Small clip counts give wide intervals: do not read small gaps as real differences.", "",
+        "| language | condition | clips | failed | empty | S | D | I | WER | WER 95% CI | WER raw | CER | number acc | RTF |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for _, r in summary.iterrows():
         if r["n_clips"] == 0:
             lines.append(f"| {r['language']} | {r['condition']} | 0 | {r['n_failed']} | 0 | 0 | 0 | 0 | n/a | | | | | |")
