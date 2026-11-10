@@ -51,8 +51,7 @@ tests/  docs/
 ```
 
 ## Next to build
-1. Collect the data: FLEURS Hindi/Gujarati (check the official licence), your own consented Hinglish clips
-   with digits in the script, a licensed noise file; build `data/manifests/manifest.jsonl`.
+1. Build the FLEURS Hindi/Gujarati manifest using `scripts/build_fleurs_manifest.py`, collect your own consented Hinglish clips with digits, and provide a licensed noise file.
 2. First real Whisper run on your GPU; commit the report in `results/reports/`.
 3. IndicConformer provider, same interface, same conditions.
 

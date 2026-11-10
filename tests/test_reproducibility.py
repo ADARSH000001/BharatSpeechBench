@@ -49,12 +49,15 @@ def test_get_model_revision_from_cache(tmp_path):
 
 
 def test_whisper_provider_settings_mocked(monkeypatch, tmp_path):
+    import sys
+    from types import ModuleType
     from unittest.mock import MagicMock
-    import faster_whisper
     from bharatspeechbench.providers.whisper import WhisperProvider
 
     fake_model = MagicMock()
-    monkeypatch.setattr(faster_whisper, "WhisperModel", lambda *args, **kwargs: fake_model)
+    fake_fw = ModuleType("faster_whisper")
+    fake_fw.WhisperModel = MagicMock(return_value=fake_model)
+    monkeypatch.setitem(sys.modules, "faster_whisper", fake_fw)
 
     # Set up mock cache
     cache = tmp_path / "hf_cache"

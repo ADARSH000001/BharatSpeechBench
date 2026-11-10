@@ -23,12 +23,35 @@ def _resolve(device: str, compute_type: str) -> tuple[str, str]:
     return device, compute_type
 
 
+_DEFAULT_MODELS: dict[str, str] = {
+    "tiny.en": "Systran/faster-whisper-tiny.en",
+    "tiny": "Systran/faster-whisper-tiny",
+    "base.en": "Systran/faster-whisper-base.en",
+    "base": "Systran/faster-whisper-base",
+    "small.en": "Systran/faster-whisper-small.en",
+    "small": "Systran/faster-whisper-small",
+    "medium.en": "Systran/faster-whisper-medium.en",
+    "medium": "Systran/faster-whisper-medium",
+    "large-v1": "Systran/faster-whisper-large-v1",
+    "large-v2": "Systran/faster-whisper-large-v2",
+    "large-v3": "Systran/faster-whisper-large-v3",
+    "large": "Systran/faster-whisper-large-v3",
+    "distil-large-v2": "Systran/faster-distil-whisper-large-v2",
+    "distil-medium.en": "Systran/faster-distil-whisper-medium.en",
+    "distil-small.en": "Systran/faster-distil-whisper-small.en",
+    "distil-large-v3": "Systran/faster-distil-whisper-large-v3",
+    "distil-large-v3.5": "distil-whisper/distil-large-v3.5-ct2",
+    "large-v3-turbo": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
+    "turbo": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
+}
+
+
 def _resolve_model_repo(size: str) -> str:
     try:
         from faster_whisper.utils import _MODELS
-        return _MODELS.get(size, size)
+        return _MODELS.get(size, _DEFAULT_MODELS.get(size, size))
     except Exception:  # noqa: BLE001
-        return size
+        return _DEFAULT_MODELS.get(size, size)
 
 
 def get_model_revision(repo_id: str, cache_dir: str | Path | None = None) -> str | None:

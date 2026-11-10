@@ -14,6 +14,7 @@ dependencies = ["numpy", "soundfile", "jiwer", "pandas", "pyarrow"]
 whisper = ["faster-whisper"]
 dev = ["pytest"]
 app = ["streamlit>=1.50", "plotly"]
+data = []
 
 [project.scripts]
 bharatspeechbench = "bharatspeechbench.cli:main"

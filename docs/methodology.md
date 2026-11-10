@@ -61,6 +61,14 @@ Speaker-disjoint rule: dev and test splits must remain strictly speaker-disjoint
 For each source record: name, version/commit, licence copied from the OFFICIAL dataset card (not a
 mirror), clips used, split. Own recordings: speaker consent, device, room, date, script read.
 
+- **Google FLEURS**:
+  - Source: Hugging Face dataset `google/fleurs` (Conneau et al., 2022).
+  - Official Licence: `cc-by-4.0` (Creative Commons Attribution 4.0 International, copied directly from the official dataset card metadata).
+  - Languages used: Hindi (`hi_in`) and Gujarati (`gu_in`).
+  - Raw-transcript decision: The benchmark uses FLEURS' `raw_transcription` column (containing original punctuation and unnormalized text) as reference rather than pre-normalized text. Normalization is handled uniformly by BharatSpeechBench's `normalize()` pipeline.
+  - Speaker ID note: FLEURS metadata does not include speaker identifiers; `speaker_id` remains null.
+  - Provenance: Manifest generation computes real audio durations and SHA-256 checksums on downloaded clips.
+
 ## Models
 Record the exact model size and revision with every result. For IndicConformer, follow the official
 AI4Bharat model card and pin the commit hash if loading uses `trust_remote_code=True`.

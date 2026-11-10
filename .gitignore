@@ -57,3 +57,5 @@ Desktop.ini
 # IDE
 .idea/
 .vscode/
+
+venv/
