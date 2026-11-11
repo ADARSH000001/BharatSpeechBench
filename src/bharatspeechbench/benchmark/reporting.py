@@ -20,16 +20,17 @@ from ..metrics.wer import Counts, bootstrap_ci, corpus_rate, paired_bootstrap_di
 from .manifest import Clip
 
 CONDITION_ORDER = ["clean", "phone", "phone_noise_20", "phone_noise_10", "phone_noise_5"]
-TRUNCATION_LEN_RATIO_THRESHOLD = 0.8
-TRUNCATION_MAX_SEGMENT_TOKENS = 210
+EARLY_STOP_RATIO_THRESHOLD = 0.8
+RUNAWAY_RATIO_THRESHOLD = 1.5
+NEAR_TOKEN_CAP_THRESHOLD = 210
 
 
-def check_truncation(
+def classify_clip_flags(
     reference: str | None,
     hypothesis: str | None,
     max_segment_tokens: int | float | None = None,
 ) -> dict:
-    """Evaluate possible truncation via (a) normalised hyp/ref char ratio < 0.8 or (b) max_segment_tokens >= 210."""
+    """Classify length-ratio anomalies (early_stop, runaway) and informational near_token_cap."""
     norm_ref = normalize(reference or "")
     norm_hyp = normalize(hypothesis or "")
     len_ratio_norm = (len(norm_hyp) / len(norm_ref)) if len(norm_ref) > 0 else None
@@ -43,14 +44,15 @@ def check_truncation(
     else:
         max_tok = None
 
-    truncated_by_ratio = len_ratio_norm is not None and len_ratio_norm < TRUNCATION_LEN_RATIO_THRESHOLD
-    truncated_by_tokens = max_tok is not None and max_tok >= TRUNCATION_MAX_SEGMENT_TOKENS
+    early_stop = bool(len_ratio_norm is not None and len_ratio_norm < EARLY_STOP_RATIO_THRESHOLD)
+    runaway = bool(len_ratio_norm is not None and len_ratio_norm > RUNAWAY_RATIO_THRESHOLD)
+    near_token_cap = bool(max_tok is not None and max_tok >= NEAR_TOKEN_CAP_THRESHOLD)
     return {
         "len_ratio_norm": len_ratio_norm,
         "max_segment_tokens": max_tok,
-        "truncated_by_ratio": truncated_by_ratio,
-        "truncated_by_tokens": truncated_by_tokens,
-        "possibly_truncated": truncated_by_ratio or truncated_by_tokens,
+        "early_stop": early_stop,
+        "runaway": runaway,
+        "near_token_cap": near_token_cap,
     }
 
 
@@ -98,13 +100,15 @@ def per_clip_table(run_dir: str | Path, clips: list[Clip]) -> pd.DataFrame:
                     f"char_len_{tag}": ch.ref_len,
                 })
             nc = number_counts(reference, hyp)
-            trunc = check_truncation(reference, hyp, max_seg_tokens)
+            flags = classify_clip_flags(reference, hyp, max_seg_tokens)
             sm, dom = script_stats(hyp, r["language"])
             base.update(
                 num_matched=nc.matched,
                 num_total=nc.total,
-                len_ratio_norm=trunc["len_ratio_norm"],
-                possibly_truncated=trunc["possibly_truncated"],
+                len_ratio_norm=flags["len_ratio_norm"],
+                early_stop=flags["early_stop"],
+                runaway=flags["runaway"],
+                near_token_cap=flags["near_token_cap"],
                 script_match=sm,
                 dominant_script=dom,
             )
@@ -123,7 +127,9 @@ def per_clip_table(run_dir: str | Path, clips: list[Clip]) -> pd.DataFrame:
         else:
             base.update(
                 len_ratio_norm=None,
-                possibly_truncated=False,
+                early_stop=False,
+                runaway=False,
+                near_token_cap=False,
                 script_match=None,
                 dominant_script=None,
                 word_err_folded=None,
@@ -139,8 +145,9 @@ def per_clip_table(run_dir: str | Path, clips: list[Clip]) -> pd.DataFrame:
     for col in ("total_tokens", "max_segment_tokens", "word_err_folded", "word_len_folded", "char_err_folded", "char_len_folded"):
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
-    if "possibly_truncated" in df.columns:
-        df["possibly_truncated"] = df["possibly_truncated"].fillna(False).astype(bool)
+    for col in ("early_stop", "runaway", "near_token_cap"):
+        if col in df.columns:
+            df[col] = df[col].fillna(False).astype(bool)
     return df
 
 
@@ -149,7 +156,21 @@ def _ci(df: pd.DataFrame, kind: str, tag: str) -> tuple[float, float]:
     return bootstrap_ci(counts)
 
 
+def _flagged_clip_ids(df: pd.DataFrame) -> set[str]:
+    """Return clip_ids flagged early_stop or runaway in ANY row/condition of df."""
+    if not len(df):
+        return set()
+    ok = df[df["error"].isna()] if "error" in df.columns else df
+    es = ok["early_stop"].fillna(False).astype(bool) if "early_stop" in ok.columns else pd.Series(False, index=ok.index)
+    ra = ok["runaway"].fillna(False).astype(bool) if "runaway" in ok.columns else pd.Series(False, index=ok.index)
+    return set(ok.loc[es | ra, "clip_id"].astype(str))
+
+
 def summary_table(per_clip: pd.DataFrame) -> pd.DataFrame:
+    flagged_by_model = {
+        model_name: _flagged_clip_ids(mg)
+        for model_name, mg in per_clip.groupby("model", sort=False)
+    }
     out = []
     for (model, lang, cond), g in per_clip.groupby(["model", "language", "condition"], sort=False):
         ok = g[g["error"].isna()]
@@ -159,14 +180,18 @@ def summary_table(per_clip: pd.DataFrame) -> pd.DataFrame:
             n_low_coverage = int((cov < 0.85).sum())
         else:
             n_low_coverage = 0
-        if len(ok) and "possibly_truncated" in ok.columns:
-            n_truncated = int(ok["possibly_truncated"].fillna(False).astype(bool).sum())
-        else:
-            n_truncated = 0
+        early_stop_cnt = int(ok["early_stop"].fillna(False).astype(bool).sum()) if len(ok) and "early_stop" in ok.columns else 0
+        runaway_cnt = int(ok["runaway"].fillna(False).astype(bool).sum()) if len(ok) and "runaway" in ok.columns else 0
+        near_cap_cnt = int(ok["near_token_cap"].fillna(False).astype(bool).sum()) if len(ok) and "near_token_cap" in ok.columns else 0
+
+        flagged_ids = flagged_by_model.get(model, set())
+        ok_excl = ok[~ok["clip_id"].astype(str).isin(flagged_ids)] if len(ok) else ok
+
         row = {"model": model, "language": lang, "condition": cond,
                "n_clips": len(ok), "n_failed": int(len(g) - len(ok)),
                "n_empty_hyp": n_empty, "n_low_coverage": n_low_coverage,
-               "n_truncated": n_truncated}
+               "early_stop": early_stop_cnt, "runaway": runaway_cnt, "near_cap": near_cap_cnt,
+               "n_clips_excl": int(len(ok_excl))}
         if len(ok):
             for kind in ("word", "char"):
                 for tag in ("raw", "norm"):
@@ -177,6 +202,14 @@ def summary_table(per_clip: pd.DataFrame) -> pd.DataFrame:
             row["word_ins_norm"] = int(ok["word_ins_norm"].sum())
             row["wer_norm_lo"], row["wer_norm_hi"] = _ci(ok, "word", "norm")
             row["cer_norm_lo"], row["cer_norm_hi"] = _ci(ok, "char", "norm")
+
+            clip_wers = ok["word_err_norm"] / ok["word_len_norm"].replace(0, np.nan)
+            row["wer_median"] = float(np.nanmedian(clip_wers)) if clip_wers.notna().any() else float("nan")
+            if len(ok_excl) and ok_excl["word_len_norm"].sum() > 0:
+                row["wer_excl_flagged"] = float(ok_excl["word_err_norm"].sum() / ok_excl["word_len_norm"].sum())
+            else:
+                row["wer_excl_flagged"] = float("nan")
+
             from ..metrics.numbers import NumberCounts
             row["number_acc"] = number_accuracy(
                 [NumberCounts(int(m), int(t)) for m, t in zip(ok["num_matched"], ok["num_total"])])
@@ -204,6 +237,8 @@ def summary_table(per_clip: pd.DataFrame) -> pd.DataFrame:
             row["word_sub_norm"] = 0
             row["word_del_norm"] = 0
             row["word_ins_norm"] = 0
+            row["wer_median"] = float("nan")
+            row["wer_excl_flagged"] = float("nan")
             row["script_match_mean"] = float("nan")
             row["wer_folded"] = float("nan")
             row["cer_folded"] = float("nan")
@@ -221,6 +256,60 @@ def _pct_or_blank(x) -> str:
     return "" if x is None or pd.isna(x) else f"{100 * x:.1f}%"
 
 
+def _format_flagged_line(r: pd.Series, fl: dict) -> str:
+    ratio_str = f"{fl['len_ratio_norm']:.2f}" if fl["len_ratio_norm"] is not None else "n/a"
+    max_tok = fl["max_segment_tokens"]
+    tot_tok = r.get("total_tokens")
+    if max_tok is not None and tot_tok is not None and pd.notna(tot_tok) and int(tot_tok) != int(max_tok):
+        tok_str = f"{max_tok} (total {int(tot_tok)})"
+    elif max_tok is not None:
+        tok_str = str(max_tok)
+    else:
+        tok_str = "n/a"
+    cov_val = r.get("coverage")
+    cov_str = f"{float(cov_val):.2f}" if cov_val is not None and pd.notna(cov_val) else "n/a"
+    return f"- `{r['clip_id']}` ({r['condition']}): ratio={ratio_str}, tokens={tok_str}, coverage={cov_str}"
+
+
+def _paired_table_lines(lang_df: pd.DataFrame, all_conditions: list[str]) -> list[str]:
+    lines = [
+        "| condition | clean WER | condition WER | absolute difference | relative degradation | 95% paired CI | n clips |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    clean_df = lang_df[(lang_df["condition"] == "clean") & lang_df["error"].isna()]
+    clean_by_id = {r["clip_id"]: r for _, r in clean_df.iterrows()}
+
+    for cond in all_conditions:
+        cond_df = lang_df[(lang_df["condition"] == cond) & lang_df["error"].isna()]
+        cond_by_id = {r["clip_id"]: r for _, r in cond_df.iterrows()}
+        paired_ids = sorted([cid for cid in clean_by_id if cid in cond_by_id])
+        n_paired = len(paired_ids)
+
+        if n_paired == 0:
+            lines.append(f"| {cond} | n/a | n/a | n/a | n/a | too few clips for an interval | 0 |")
+            continue
+
+        c_counts = [Counts(int(clean_by_id[cid]["word_err_norm"]), int(clean_by_id[cid]["word_len_norm"])) for cid in paired_ids]
+        b_counts = [Counts(int(cond_by_id[cid]["word_err_norm"]), int(cond_by_id[cid]["word_len_norm"])) for cid in paired_ids]
+        c_sum = sum(c.ref_len for c in c_counts)
+        b_sum = sum(c.ref_len for c in b_counts)
+        c_rate = sum(c.errors for c in c_counts) / c_sum if c_sum else 0.0
+        b_rate = sum(c.errors for c in b_counts) / b_sum if b_sum else 0.0
+
+        if n_paired < 5:
+            diff = b_rate - c_rate
+            ci_str = "too few clips for an interval"
+        else:
+            diff, lo, hi = paired_bootstrap_diff(c_counts, b_counts)
+            ci_str = f"{lo:+.1%} to {hi:+.1%}"
+
+        rel = (diff / c_rate) if c_rate > 0 else (0.0 if diff == 0 else None)
+        rel_str = f"{100 * rel:+.1f}%" if rel is not None else "n/a"
+        lines.append(f"| {cond} | {_pct(c_rate)} | {_pct(b_rate)} | {diff:+.1%} | {rel_str} | {ci_str} | {n_paired} |")
+
+    return lines
+
+
 def markdown_report(run_id: str, summary: pd.DataFrame, config: dict,
                     per_clip: pd.DataFrame | None = None) -> str:
     env = config.get("environment", {})
@@ -232,16 +321,17 @@ def markdown_report(run_id: str, summary: pd.DataFrame, config: dict,
     if env.get("git_dirty") is True:
         lines += ["WARNING: uncommitted changes when this run was made.", ""]
     lines += [
-        "WER/CER are corpus-level (normalised unless marked raw), with a bootstrap 95% interval over clips.",
+        "WER/CER are corpus-level (normalised unless marked raw), with a bootstrap 95% interval over clips. Primary WER includes all succeeded clips and is shown first.",
+        "Sensitivity columns (`wer_median`, `wer_excl_flagged`, `n_kept`): secondary checks; `wer_excl_flagged` drops any clip flagged `early_stop` or `runaway` in any condition identically across all conditions (`near_cap` is informational only).",
         "`wer_folded` / `cer_folded` (Gujarati only; approximate: ignores script, not spelling conventions).",
         "Small clip counts give wide intervals: do not read small gaps as real differences.", "",
-        "| language | condition | clips | failed | empty | S | D | I | WER | WER 95% CI | WER raw | CER | wer_folded | cer_folded | script match | number acc | RTF | low coverage | truncated |",
-        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+        "| language | condition | clips | failed | empty | S | D | I | WER | WER 95% CI | WER raw | CER | wer_median (sensitivity) | wer_excl_flagged (sensitivity) | n_kept (sensitivity) | wer_folded | cer_folded | script match | number acc | RTF | low coverage | early_stop | runaway | near_cap |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for _, r in summary.iterrows():
         if r["n_clips"] == 0:
             lines.append(
-                f"| {r['language']} | {r['condition']} | 0 | {r['n_failed']} | 0 | 0 | 0 | 0 | n/a | | | | | | n/a | | | "
-                f"{r.get('n_low_coverage', 0)} | {r.get('n_truncated', 0)} |"
+                f"| {r['language']} | {r['condition']} | 0 | {r['n_failed']} | 0 | 0 | 0 | 0 | n/a | | | | n/a | n/a | 0 | | | n/a | | | "
+                f"{r.get('n_low_coverage', 0)} | {r.get('early_stop', 0)} | {r.get('runaway', 0)} | {r.get('near_cap', 0)} |"
             )
             continue
         lines.append(
@@ -249,9 +339,10 @@ def markdown_report(run_id: str, summary: pd.DataFrame, config: dict,
             f"{r.get('n_empty_hyp', 0)} | {r.get('word_sub_norm', 0)} | {r.get('word_del_norm', 0)} | {r.get('word_ins_norm', 0)} | "
             f"{_pct(r['wer_norm'])} | {_pct(r['wer_norm_lo'])} to {_pct(r['wer_norm_hi'])} | "
             f"{_pct(r['wer_raw'])} | {_pct(r['cer_norm'])} | "
+            f"{_pct(r.get('wer_median'))} | {_pct(r.get('wer_excl_flagged'))} | {r.get('n_clips_excl', r['n_clips'])} | "
             f"{_pct_or_blank(r.get('wer_folded'))} | {_pct_or_blank(r.get('cer_folded'))} | "
             f"{_pct(r.get('script_match_mean'))} | {_pct(r['number_acc'])} | {r['rtf_median']:.2f} | "
-            f"{r.get('n_low_coverage', 0)} | {r.get('n_truncated', 0)} |")
+            f"{r.get('n_low_coverage', 0)} | {r.get('early_stop', 0)} | {r.get('runaway', 0)} | {r.get('near_cap', 0)} |")
 
     if per_clip is not None and len(per_clip):
         ok = per_clip[per_clip["error"].isna()].copy()
@@ -263,86 +354,59 @@ def markdown_report(run_id: str, summary: pd.DataFrame, config: dict,
                 wer_str = _pct(r["clip_wer"])
                 lines.append(f"- `{r['clip_id']}` ({r['condition']}): {wer_str}")
 
-            flagged = []
+            early_rows = []
+            runaway_rows = []
             for _, r in ok.iterrows():
                 max_tok = r.get("max_segment_tokens")
                 if "reference" in r and pd.notna(r["reference"]):
-                    tr = check_truncation(str(r["reference"]), r.get("hypothesis"), max_tok)
+                    fl = classify_clip_flags(str(r["reference"]), r.get("hypothesis"), max_tok)
                 else:
                     lr = r.get("len_ratio_norm")
                     ratio_val = float(lr) if lr is not None and pd.notna(lr) else None
                     max_tok_int = int(max_tok) if max_tok is not None and pd.notna(max_tok) else None
-                    tr = {
+                    fl = {
                         "len_ratio_norm": ratio_val,
                         "max_segment_tokens": max_tok_int,
-                        "truncated_by_ratio": ratio_val is not None and ratio_val < TRUNCATION_LEN_RATIO_THRESHOLD,
-                        "truncated_by_tokens": max_tok_int is not None and max_tok_int >= TRUNCATION_MAX_SEGMENT_TOKENS,
+                        "early_stop": bool(r["early_stop"]) if "early_stop" in r and pd.notna(r["early_stop"]) else (ratio_val is not None and ratio_val < EARLY_STOP_RATIO_THRESHOLD),
+                        "runaway": bool(r["runaway"]) if "runaway" in r and pd.notna(r["runaway"]) else (ratio_val is not None and ratio_val > RUNAWAY_RATIO_THRESHOLD),
+                        "near_token_cap": bool(r["near_token_cap"]) if "near_token_cap" in r and pd.notna(r["near_token_cap"]) else (max_tok_int is not None and max_tok_int >= NEAR_TOKEN_CAP_THRESHOLD),
                     }
-                    tr["possibly_truncated"] = tr["truncated_by_ratio"] or tr["truncated_by_tokens"]
-                if tr["possibly_truncated"]:
-                    flagged.append((r, tr))
+                if fl["early_stop"]:
+                    early_rows.append((r, fl))
+                if fl["runaway"]:
+                    runaway_rows.append((r, fl))
 
-            if flagged:
-                lines += ["", "## Possible truncation"]
-                for r, tr in flagged:
-                    reasons = []
-                    if tr["truncated_by_ratio"]:
-                        reasons.append(f"norm len ratio {tr['len_ratio_norm']:.2f} < {TRUNCATION_LEN_RATIO_THRESHOLD}")
-                    if tr["truncated_by_tokens"]:
-                        reasons.append(f"max_segment_tokens {tr['max_segment_tokens']} >= {TRUNCATION_MAX_SEGMENT_TOKENS}")
-                    ratio_str = f"{tr['len_ratio_norm']:.2f}" if tr["len_ratio_norm"] is not None else "n/a"
-                    max_tok_str = str(tr["max_segment_tokens"]) if tr["max_segment_tokens"] is not None else "n/a"
-                    cov_val = r.get("coverage")
-                    cov_str = f"{float(cov_val):.2f}" if cov_val is not None and pd.notna(cov_val) else "n/a"
-                    lines.append(
-                        f"- `{r['clip_id']}` ({r['condition']}): {'; '.join(reasons)} "
-                        f"(hyp/ref len ratio={ratio_str}, max_segment_tokens={max_tok_str}, coverage={cov_str})"
-                    )
+            if early_rows or runaway_rows:
+                lines += ["", "## Flagged clips"]
+                lines += ["", f"### Early stops (ratio < {EARLY_STOP_RATIO_THRESHOLD})"]
+                if early_rows:
+                    early_rows.sort(key=lambda x: (x[1]["len_ratio_norm"] if x[1]["len_ratio_norm"] is not None else 0.0, str(x[0]["clip_id"]), str(x[0]["condition"])))
+                    lines.extend(_format_flagged_line(r, fl) for r, fl in early_rows)
+                else:
+                    lines.append("- None")
+                lines += ["", f"### Runaway outputs (ratio > {RUNAWAY_RATIO_THRESHOLD})"]
+                if runaway_rows:
+                    runaway_rows.sort(key=lambda x: (-(x[1]["len_ratio_norm"] if x[1]["len_ratio_norm"] is not None else 0.0), str(x[0]["clip_id"]), str(x[0]["condition"])))
+                    lines.extend(_format_flagged_line(r, fl) for r, fl in runaway_rows)
+                else:
+                    lines.append("- None")
 
         lines += ["", "## Paired comparison vs clean"]
+        flagged_all = _flagged_clip_ids(per_clip)
         languages = sorted(per_clip["language"].unique())
         for lang in languages:
-            lines += ["", f"### {lang}",
-                      "| condition | clean WER | condition WER | absolute difference | relative degradation | 95% paired CI | n clips |",
-                      "|---|---|---|---|---|---|---|"]
             lang_df = per_clip[per_clip["language"] == lang]
-            clean_df = lang_df[(lang_df["condition"] == "clean") & lang_df["error"].isna()]
-            clean_by_id = {r["clip_id"]: r for _, r in clean_df.iterrows()}
             non_clean_conds = [c for c in CONDITION_ORDER if c in lang_df["condition"].unique() and c != "clean"]
             for c in lang_df["condition"].unique():
                 if c != "clean" and c not in non_clean_conds:
                     non_clean_conds.append(c)
 
-            for cond in non_clean_conds:
-                cond_df = lang_df[(lang_df["condition"] == cond) & lang_df["error"].isna()]
-                cond_by_id = {r["clip_id"]: r for _, r in cond_df.iterrows()}
-                paired_ids = sorted([cid for cid in clean_by_id if cid in cond_by_id])
-                n_paired = len(paired_ids)
+            lines += ["", f"### {lang}"]
+            lines.extend(_paired_table_lines(lang_df, non_clean_conds))
 
-                if n_paired == 0:
-                    lines.append(f"| {cond} | n/a | n/a | n/a | n/a | too few clips for an interval | 0 |")
-                elif n_paired < 5:
-                    c_counts = [Counts(int(clean_by_id[cid]["word_err_norm"]), int(clean_by_id[cid]["word_len_norm"])) for cid in paired_ids]
-                    b_counts = [Counts(int(cond_by_id[cid]["word_err_norm"]), int(cond_by_id[cid]["word_len_norm"])) for cid in paired_ids]
-                    c_sum = sum(c.ref_len for c in c_counts)
-                    b_sum = sum(c.ref_len for c in b_counts)
-                    c_rate = sum(c.errors for c in c_counts) / c_sum if c_sum else 0.0
-                    b_rate = sum(c.errors for c in b_counts) / b_sum if b_sum else 0.0
-                    diff = b_rate - c_rate
-                    rel = (diff / c_rate) if c_rate > 0 else (0.0 if diff == 0 else None)
-                    rel_str = f"{100 * rel:+.1f}%" if rel is not None else "n/a"
-                    lines.append(f"| {cond} | {_pct(c_rate)} | {_pct(b_rate)} | {diff:+.1%} | {rel_str} | too few clips for an interval | {n_paired} |")
-                else:
-                    c_counts = [Counts(int(clean_by_id[cid]["word_err_norm"]), int(clean_by_id[cid]["word_len_norm"])) for cid in paired_ids]
-                    b_counts = [Counts(int(cond_by_id[cid]["word_err_norm"]), int(cond_by_id[cid]["word_len_norm"])) for cid in paired_ids]
-                    c_sum = sum(c.ref_len for c in c_counts)
-                    b_sum = sum(c.ref_len for c in b_counts)
-                    c_rate = sum(c.errors for c in c_counts) / c_sum if c_sum else 0.0
-                    b_rate = sum(c.errors for c in b_counts) / b_sum if b_sum else 0.0
-                    diff, lo, hi = paired_bootstrap_diff(c_counts, b_counts)
-                    rel = (diff / c_rate) if c_rate > 0 else (0.0 if diff == 0 else None)
-                    rel_str = f"{100 * rel:+.1f}%" if rel is not None else "n/a"
-                    lines.append(f"| {cond} | {_pct(c_rate)} | {_pct(b_rate)} | {diff:+.1%} | {rel_str} | {lo:+.1%} to {hi:+.1%} | {n_paired} |")
+            lines += ["", f"#### {lang} (sensitivity: excluding early_stop/runaway clips)"]
+            lang_excl = lang_df[~lang_df["clip_id"].astype(str).isin(flagged_all)]
+            lines.extend(_paired_table_lines(lang_excl, non_clean_conds))
 
     lines += ["", "Limits: see docs/methodology.md (phone channel is a simulation; Hinglish script policy; "
               "public sets may overlap with training data; number accuracy compares digits only)."]

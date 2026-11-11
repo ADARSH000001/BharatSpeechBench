@@ -29,6 +29,7 @@ htmlcov/
 data/downloads/
 data/own_recordings/
 data/conditions/
+data/noise/*.wav
 
 # Benchmark-generated outputs
 results/raw/

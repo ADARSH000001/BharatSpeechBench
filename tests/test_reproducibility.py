@@ -282,11 +282,18 @@ def test_git_dirty_real_repo_ignores_untracked(tmp_path):
 
     tracked = repo / "tracked.txt"
     tracked.write_text("v1\n", encoding="utf-8")
-    subprocess.run(["git", "add", "tracked.txt"], cwd=repo, check=True, capture_output=True)
+    (repo / ".gitignore").write_text("ignored_dir/\nresults/raw/\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt", ".gitignore"], cwd=repo, check=True, capture_output=True)
     subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True, capture_output=True)
     assert _git_dirty(cwd=repo) is False
 
-    # Untracked file only -> still clean (False)
+    # Untracked results/ folder + ignored folder -> still clean (False)
+    (repo / "ignored_dir").mkdir()
+    (repo / "ignored_dir" / "noise.wav").write_bytes(b"RIFF")
+    (repo / "results" / "raw" / "r1").mkdir(parents=True)
+    (repo / "results" / "raw" / "r1" / "config.json").write_text("{}")
+    (repo / "results" / "reports").mkdir(parents=True)
+    (repo / "results" / "reports" / "r1.md").write_text("# report")
     (repo / "untracked.txt").write_text("hello\n", encoding="utf-8")
     assert _git_dirty(cwd=repo) is False
 

@@ -91,6 +91,7 @@ def test_show_transcripts_script(tmp_path, capsys):
         Clip(id="c3", path="c3.wav", language="hi", source="fleurs", split="test", reference="लंबा वाक्य जो बहुत बड़ा है", duration_s=2.0, sha256="0" * 64, licence="cc-by-4.0"),
         Clip(id="c4", path="c4.wav", language="hi", source="fleurs", split="test", reference="सामान्य वाक्य", duration_s=2.0, sha256="0" * 64, licence="cc-by-4.0"),
         Clip(id="c5", path="c5.wav", language="hi", source="fleurs", split="test", reference="सामान्य वाक्य है", duration_s=2.0, sha256="0" * 64, licence="cc-by-4.0"),
+        Clip(id="c6", path="c6.wav", language="hi", source="fleurs", split="test", reference="छोटा वाक्य", duration_s=2.0, sha256="0" * 64, licence="cc-by-4.0"),
     ]
     man = tmp_path / "manifest.jsonl"
     write_manifest(clips, man)
@@ -98,11 +99,12 @@ def test_show_transcripts_script(tmp_path, capsys):
     run_dir = tmp_path / "raw_run"
     run_dir.mkdir()
     transcripts = [
-        {"clip_id": "c1", "condition": "clean", "language": "hi", "text": "नमस्ते", "meta": {"coverage": 0.5, "total_tokens": 12, "max_segment_tokens": 12}, "error": None},  # short (a) + low coverage
-        {"clip_id": "c2", "condition": "phone", "language": "gu", "text": "namaste world here", "meta": {"coverage": 1.0, "total_tokens": 15, "max_segment_tokens": 15}, "error": None},  # latin for indic, full cov
+        {"clip_id": "c1", "condition": "clean", "language": "hi", "text": "नमस्ते", "meta": {"coverage": 0.5, "total_tokens": 12, "max_segment_tokens": 12}, "error": None},  # early_stop + low coverage
+        {"clip_id": "c2", "condition": "phone", "language": "gu", "text": "namaste world here", "meta": {"coverage": 1.0, "total_tokens": 15, "max_segment_tokens": 15}, "error": None},  # latin for indic
         {"clip_id": "c3", "condition": "clean", "language": "hi", "text": "", "error": None},  # empty
         {"clip_id": "c4", "condition": "clean", "language": "hi", "text": None, "error": "RuntimeError: boom"},  # error
-        {"clip_id": "c5", "condition": "clean", "language": "hi", "text": "सामान्य वाक्य है", "meta": {"coverage": 1.0, "total_tokens": 224, "max_segment_tokens": 224}, "error": None},  # token cap (b)
+        {"clip_id": "c5", "condition": "clean", "language": "hi", "text": "सामान्य वाक्य है", "meta": {"coverage": 1.0, "total_tokens": 224, "max_segment_tokens": 224}, "error": None},  # near_token_cap only (INFO)
+        {"clip_id": "c6", "condition": "clean", "language": "hi", "text": "छोटा वाक्य छोटा वाक्य छोटा वाक्य", "meta": {"coverage": 1.0, "total_tokens": 40, "max_segment_tokens": 40}, "error": None},  # runaway
     ]
     with (run_dir / "transcripts.jsonl").open("w", encoding="utf-8") as f:
         for r in transcripts:
@@ -118,7 +120,7 @@ def test_show_transcripts_script(tmp_path, capsys):
     assert "SCRIPT: dominant=Devanagari, match=1.00" in out
     assert "WARNING: low coverage (0.50 < 0.85)" in out
     assert "WARNING: hypothesis length is less than 50% of reference length" in out
-    assert "WARNING: possible truncation (norm len ratio" in out
+    assert "WARNING: early_stop (norm len ratio" in out
     assert "[c2] condition=phone" in out
     assert "COVERAGE: 1.00" in out
     assert "SCRIPT: dominant=Latin, match=0.00" in out
@@ -131,8 +133,11 @@ def test_show_transcripts_script(tmp_path, capsys):
     assert "ERROR: RuntimeError: boom" in out
     assert "[c5] condition=clean" in out
     assert "TOKENS: total=224, max_segment=224" in out
-    assert "WARNING: possible truncation (max_segment_tokens=224 >= 210)" in out
-    assert "Displayed 5 transcripts." in out
+    assert "INFO: near_token_cap (max_segment_tokens=224 >= 210)" in out
+    assert "WARNING: near_token_cap" not in out
+    assert "[c6] condition=clean" in out
+    assert "WARNING: runaway (norm len ratio" in out
+    assert "Displayed 6 transcripts." in out
 
     # Test filtering by condition
     buf_cond = StringIO()
@@ -199,3 +204,72 @@ def test_cli_run_decoding_options_mocked(tmp_path, monkeypatch):
     assert kw["chunk_length"] == 15
     assert kw["max_new_tokens"] == 200
     assert kw["initial_prompt"] == "આ એક ગુજરાતી વાક્ય છે."
+
+
+def test_error_audit_script(tmp_path):
+    from io import StringIO
+    from scripts.error_audit import run_error_audit
+
+    clips = [
+        Clip(id="h1", path="h1.wav", language="hi", source="fleurs", split="test",
+             reference="TMZ ने 12 फोटो लीं।", duration_s=5.0, sha256="0" * 64, licence="cc-by-4.0"),
+        Clip(id="h2", path="h2.wav", language="hi", source="fleurs", split="test",
+             reference="एक दो तीन चार पाँच छह।", duration_s=6.0, sha256="0" * 64, licence="cc-by-4.0"),
+        Clip(id="g1", path="g1.wav", language="gu", source="fleurs", split="test",
+             reference="આજે 5 વાગ્યે આવજો", duration_s=4.0, sha256="0" * 64, licence="cc-by-4.0"),
+    ]
+    man = tmp_path / "manifest.jsonl"
+    write_manifest(clips, man)
+
+    run_dir = tmp_path / "audit_run"
+    run_dir.mkdir()
+    rows = [
+        # Old errored attempt (retried below -> deduped out)
+        {"clip_id": "h1", "condition": "clean", "language": "hi", "text": None, "error": "RuntimeError: retry"},
+        # Retried h1 clean: "tmz" -> "टीमजी" (latin->indic), "12" -> "बारह" (digit->words), "लीं" -> "ली" (other)
+        {"clip_id": "h1", "condition": "clean", "language": "hi", "text": "टीमजी ने बारह फोटो ली",
+         "meta": {"coverage": 0.95}, "error": None},
+        # h2 phone: 4 deletions ("एक दो", deleted 4 words)
+        {"clip_id": "h2", "condition": "phone", "language": "hi", "text": "एक दो",
+         "meta": {"coverage": 0.40}, "error": None},
+        # g1 clean: "5" -> "पाँच" (digit->words) + Indic subs
+        {"clip_id": "g1", "condition": "clean", "language": "gu", "text": "आजे पाँच वाग्ये आवजो",
+         "meta": {"coverage": 1.0}, "error": None},
+    ]
+    tpath = run_dir / "transcripts.jsonl"
+    tpath.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n", encoding="utf-8")
+    before_bytes = tpath.read_bytes()
+    before_files = sorted(p.name for p in run_dir.iterdir())
+
+    # Full run audit
+    buf = StringIO()
+    rc = run_error_audit(run_dir, man, out_file=buf)
+    assert rc == 0
+    out = buf.getvalue()
+
+    # Read-only guarantee
+    assert tpath.read_bytes() == before_bytes
+    assert sorted(p.name for p in run_dir.iterdir()) == before_files
+
+    assert "(a) Top 25 substitution pairs" in out
+    assert "tmz -> टीमजी" in out
+    assert "12 -> बारह" in out
+    assert "5 -> पाँच" in out
+    assert "(b) Substitution types:" in out
+    assert "Latin -> Devanagari/Gujarati: 1" in out
+    assert "Digit sequence -> words: 2" in out
+    assert "Other: 4" in out
+    assert "(c) Top 10 clips with the most deletions:" in out
+    assert "h2 (phone, hi): deletions=4, ratio=" in out
+    assert "coverage=0.40" in out
+
+    # Filtered by --language hi --condition clean
+    buf_f = StringIO()
+    rc_f = run_error_audit(run_dir, man, language="hi", condition="clean", out_file=buf_f)
+    assert rc_f == 0
+    out_f = buf_f.getvalue()
+    assert "(1 clips)" in out_f
+    assert "Latin -> Devanagari/Gujarati: 1" in out_f
+    assert "Digit sequence -> words: 1" in out_f
+    assert "Other: 1" in out_f
+    assert "h2" not in out_f and "g1" not in out_f

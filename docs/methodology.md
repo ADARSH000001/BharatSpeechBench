@@ -21,7 +21,8 @@ Originals are never modified. Listen to the generated files (`bsb simulate`) bef
 All degraded conditions are SYNTHETIC:
 - `phone` is a software codec simulation (band-pass 300–3400 Hz, 8 kHz downsampling, G.711 mu-law), not an acoustic telephone channel.
 - `phone_noise_<N>` mixes noise at calibrated SNR before passing through the simulated codec.
-- Real noisy recordings are a separate, future condition. Never refer to synthetic noise as a real recording.
+- **Synthetic noise at fixed SNR is not a real noisy recording.** Real noisy recordings are a separate, future condition; never refer to synthetic noise as a real recording.
+- Rule: **one noise file per run; noise type is part of the run id** (e.g. `pilot-whisper-small-straffic-v1`).
 
 ## Normalisation (applied to reference and hypothesis)
 Unicode NFC; Devanagari and Gujarati digits to ASCII; punctuation incl. danda removed;
@@ -35,11 +36,13 @@ Normalisation is tuned on the `dev` split only.
 - faster-whisper: beam size 5, temperature 0, no initial prompt, no conditioning on previous text.
   Device and compute type (float16 on GPU, int8 on CPU) are recorded in `config.json`; they can change scores.
 - Token-cap behaviour: Whisper's decoder limits generation to 224 tokens per 30 s window (`max_length = 448`). Because Whisper's byte-level BPE splits multi-byte Indic scripts (Hindi/Devanagari, Gujarati) into many tokens per word, long uninterrupted utterances can hit the 224-token cap mid-word without emitting an end-of-text or closing timestamp token. When that happens, `faster-whisper` fills in the full window/clip duration as the segment end time, so `coverage` (`last_segment_end_s / audio_seconds`) stays `1.00` and does **not** detect token-cap stops.
-- Decoding experiments (temperature fallback, VAD, chunking) are judged on `dev` clips only; the `test` split is used once per final configuration. Any decoding change gets a new run id and is reported next to the old one. Candidate decoding settings are chosen on `dev` by **truncation rate** (fewest `n_truncated` clips; ties go to the simplest variant), **not** by WER.
-- Truncation detection (constants in `src/bharatspeechbench/benchmark/reporting.py`): a succeeded clip is flagged as possibly truncated (`n_truncated`, never excluded from scores) if either:
-  (a) normalised hypothesis length / normalised reference length (characters) `< 0.8` (`TRUNCATION_LEN_RATIO_THRESHOLD = 0.8`), or
-  (b) `max_segment_tokens >= 210` (`TRUNCATION_MAX_SEGMENT_TOKENS = 210`).
+- Decoding experiments (temperature fallback, VAD, chunking) are judged on `dev` clips only; the `test` split is used once per final configuration. Any decoding change gets a new run id and is reported next to the old one. Candidate decoding settings are chosen on `dev` by anomaly/truncation rate (`early_stop` / `runaway`; ties go to the simplest variant), **not** by WER.
+- Output quality flags (constants in `src/bharatspeechbench/benchmark/reporting.py`, computed on succeeded clips; clips are **never** excluded from primary WER/CER scores):
+  - `early_stop`: normalised hypothesis/reference character length ratio `< 0.8` (`EARLY_STOP_RATIO_THRESHOLD = 0.8`).
+  - `runaway`: normalised hypothesis/reference character length ratio `> 1.5` (`RUNAWAY_RATIO_THRESHOLD = 1.5`).
+  - `near_token_cap`: `max_segment_tokens >= 210` (`NEAR_TOKEN_CAP_THRESHOLD = 210`). Informational only (not a failure by itself and not listed in `Flagged clips` unless also flagged by ratio).
   `coverage` and `low coverage` (`coverage < 0.85`) are kept as extra columns to catch early timestamp stops, with the caveat above that `coverage` does not catch token-cap stops.
+- Secondary sensitivity checks (never replace primary WER): `wer_median` (median per-clip WER) and `wer_excl_flagged` (corpus WER after removing any clip flagged `early_stop` or `runaway` in **any** condition of that run, applied identically across every condition alongside `n_kept` and an analogous exclusion paired table).
 - One un-timed warm-up call runs first so model/GPU start-up is not counted in RTF.
 - A clip that raises an error is stored with the error, excluded from scores and counted in `n_failed`.
   It is never scored as an empty transcript.
@@ -82,6 +85,12 @@ mirror), clips used, split. Own recordings: speaker consent, device, room, date,
   - Speaker ID note: FLEURS metadata does not include speaker identifiers; `speaker_id` remains null.
   - Provenance: Manifest generation computes real audio durations and SHA-256 checksums on downloaded clips.
 
+- **DEMAND** (Diverse Environments Multichannel Acoustic Noise Database):
+  - Source: Zenodo record `1227121` (`https://zenodo.org/records/1227121`, DOI `10.5281/zenodo.1227121`, Thiemann et al., 2013).
+  - Official Licence: `"This work, the audio data and the document describing it, is licensed under a Creative Commons Attribution-ShareAlike 3.0 Unported License."` (`CC BY-SA 3.0`, per `DEMAND.pdf` and Zenodo description; Zenodo metadata tag lists `cc-by-4.0`). Audio files stay git-ignored under `data/downloads/noise/` and `data/noise/*.wav`.
+  - Environments prepared: `STRAFFIC` (street traffic intersection), `PCAFETER` (office cafeteria/crowd), `DKITCHEN` (indoor kitchen). Each prepared to 120 s 16 kHz mono PCM16 via `scripts/prepare_noise.py`, with hashes and provenance tracked in `data/noise/SOURCES.md`.
+  - Rule: one noise file per run; noise type is part of the run id. Synthetic noise mixed at fixed SNR is not a real noisy recording.
+
 ## Models
 Record the exact model size and revision with every result. For IndicConformer, follow the official
 AI4Bharat model card and pin the commit hash if loading uses `trust_remote_code=True`.
@@ -92,5 +101,4 @@ AI4Bharat model card and pin the commit hash if loading uses `trust_remote_code=
 - English words inside Hindi references are written in Latin script in FLEURS raw transcripts, while Whisper often outputs Devanagari. Decide the policy before quoting numbers.
 - Whisper model size; IndicConformer revision.
 - Number accuracy: needs clips that contain numbers (record scripted ones).
-- Noise corpus and its licence (MUSAN, DEMAND, or your own recording).
 - Public test sets may overlap with model training data; report own recordings separately.

@@ -42,6 +42,16 @@ streamlit run app/Home.py
 Re-run the same `--run-id` to resume an interrupted run. A run refuses to continue if the model, conditions, split,
 noise file, limit, or manifest changed. Note that a smoke run is not a result. `--device cpu` if the GPU fails to load (Windows needs CUDA 12 cuBLAS + cuDNN 9).
 
+## Noise
+Noisy conditions use 16 kHz mono clips prepared from the **DEMAND** corpus (Zenodo record `1227121`, CC BY-SA 3.0; environments `STRAFFIC`, `PCAFETER`, `DKITCHEN`).
+Original archives live in `data/downloads/noise/` and prepared files in `data/noise/*.wav` (both git-ignored); only `data/noise/SOURCES.md` is tracked.
+Use one noise file per run and include the noise type in `--run-id` (synthetic SNR mixing is not a real noisy recording):
+```bash
+python scripts/prepare_noise.py --src data/downloads/noise --out data/noise --env STRAFFIC --env PCAFETER --env DKITCHEN --seconds 120
+bsb run data/manifests/pilot.jsonl --noise data/noise/STRAFFIC.wav --run-id whisper-small-straffic-v1
+bsb report results/raw/whisper-small-straffic-v1 --manifest data/manifests/pilot.jsonl
+```
+
 ## Layout
 ```
 app/                      Streamlit dashboard (read-only)

@@ -12,9 +12,10 @@ from pathlib import Path
 
 from bharatspeechbench.benchmark.manifest import load_manifest
 from bharatspeechbench.benchmark.reporting import (
-    TRUNCATION_LEN_RATIO_THRESHOLD,
-    TRUNCATION_MAX_SEGMENT_TOKENS,
-    check_truncation,
+    EARLY_STOP_RATIO_THRESHOLD,
+    NEAR_TOKEN_CAP_THRESHOLD,
+    RUNAWAY_RATIO_THRESHOLD,
+    classify_clip_flags,
 )
 from bharatspeechbench.metrics.normalization import script_stats
 from bharatspeechbench.metrics.wer import per_utterance
@@ -52,14 +53,14 @@ def get_warnings(
     if isinstance(script_match, (int, float)) and not isinstance(script_match, bool) and script_match < 0.5:
         warnings.append(f"low script match ({script_match:.2f} < 0.50)")
 
-    trunc = check_truncation(ref, hyp, max_segment_tokens)
-    if trunc["truncated_by_ratio"]:
+    flags = classify_clip_flags(ref, hyp, max_segment_tokens)
+    if flags["early_stop"]:
         warnings.append(
-            f"possible truncation (norm len ratio {trunc['len_ratio_norm']:.2f} < {TRUNCATION_LEN_RATIO_THRESHOLD})"
+            f"early_stop (norm len ratio {flags['len_ratio_norm']:.2f} < {EARLY_STOP_RATIO_THRESHOLD})"
         )
-    if trunc["truncated_by_tokens"]:
+    if flags["runaway"]:
         warnings.append(
-            f"possible truncation (max_segment_tokens={trunc['max_segment_tokens']} >= {TRUNCATION_MAX_SEGMENT_TOKENS})"
+            f"runaway (norm len ratio {flags['len_ratio_norm']:.2f} > {RUNAWAY_RATIO_THRESHOLD})"
         )
 
     return warnings
@@ -132,6 +133,13 @@ def show_transcripts(
             f"(errors={counts.errors}, ref_len={counts.ref_len})",
             file=out_file,
         )
+
+        flags = classify_clip_flags(ref_raw, hyp_raw, max_seg_tok)
+        if flags["near_token_cap"]:
+            print(
+                f"  INFO: near_token_cap (max_segment_tokens={flags['max_segment_tokens']} >= {NEAR_TOKEN_CAP_THRESHOLD})",
+                file=out_file,
+            )
 
         warnings = get_warnings(
             ref_raw,
