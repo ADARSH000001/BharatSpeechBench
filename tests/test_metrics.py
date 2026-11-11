@@ -137,3 +137,52 @@ def test_fold_devanagari_to_gujarati():
 
     # Devanagari characters without Gujarati counterpart stay unmapped (not turned into rupee/Arabic marks)
     assert fold_devanagari_to_gujarati("। क़ ॱ ॺ") == "। क़ ॱ ॺ"
+
+
+def test_normalize_lenient_hi():
+    from bharatspeechbench.metrics.normalization import normalize_lenient_hi
+
+    # Nukta stripped (decomposed फ+़ and precomposed फ़ U+095E via NFC decomposition)
+    assert normalize_lenient_hi("काफ़ी") == "काफी"
+    assert normalize_lenient_hi("\u0915\u093e\u095e\u0940") == "काफी"
+    assert per_utterance(
+        [normalize_lenient_hi("काफ़ी")],
+        [normalize_lenient_hi("काफी")],
+        "word",
+        False,
+    )[0].errors == 0
+    assert per_utterance(
+        [normalize_lenient_hi("\u0915\u093e\u095e\u0940")],
+        [normalize_lenient_hi("काफी")],
+        "char",
+        False,
+    )[0].errors == 0
+
+    # Chandrabindu U+0901 mapped to anusvara U+0902
+    assert normalize_lenient_hi("हँ") == "हं"
+    assert per_utterance(
+        [normalize_lenient_hi("हँ")],
+        [normalize_lenient_hi("हं")],
+        "word",
+        False,
+    )[0].errors == 0
+
+    # Vowel-length / matra differences & anusvara deletion are NOT folded
+    assert per_utterance(
+        [normalize_lenient_hi("पुलिस")],
+        [normalize_lenient_hi("पोलिस")],
+        "word",
+        False,
+    )[0].errors == 1
+    assert per_utterance(
+        [normalize_lenient_hi("हैं")],
+        [normalize_lenient_hi("है")],
+        "word",
+        False,
+    )[0].errors == 1
+    assert per_utterance(
+        [normalize_lenient_hi("तूफ़ान")],
+        [normalize_lenient_hi("तुफान")],
+        "word",
+        False,
+    )[0].errors == 1

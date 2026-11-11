@@ -14,7 +14,7 @@ import jiwer
 
 from bharatspeechbench.benchmark.manifest import load_manifest
 from bharatspeechbench.benchmark.reporting import _load_transcripts
-from bharatspeechbench.metrics.normalization import normalize
+from bharatspeechbench.metrics.normalization import normalize, normalize_lenient_hi
 from bharatspeechbench.metrics.wer import per_utterance
 
 
@@ -32,6 +32,8 @@ def classify_substitution(ref_word: str, hyp_word: str) -> str:
         return "latin_to_indic"
     if ref_word.isdigit() and not hyp_word.isdigit() and any(c.isalpha() for c in hyp_word):
         return "digit_to_words"
+    if normalize_lenient_hi(ref_word) == normalize_lenient_hi(hyp_word):
+        return "orthographic"
     return "other"
 
 
@@ -51,7 +53,12 @@ def compute_error_audit(
     rows = _load_transcripts(run_path)
 
     sub_pairs: Counter[tuple[str, str]] = Counter()
-    sub_types: Counter[str] = Counter({"latin_to_indic": 0, "digit_to_words": 0, "other": 0})
+    sub_types: Counter[str] = Counter({
+        "latin_to_indic": 0,
+        "digit_to_words": 0,
+        "orthographic": 0,
+        "other": 0,
+    })
     deletion_rows: list[dict] = []
     n_clips = 0
 
@@ -138,10 +145,17 @@ def run_error_audit(
 
     st = audit["substitution_types"]
     total_subs = sum(st.values())
+
+    def _sub_line(label: str, key: str) -> str:
+        cnt = st.get(key, 0)
+        share = (100.0 * cnt / total_subs) if total_subs > 0 else 0.0
+        return f"  {label}: {cnt} ({share:.1f}%)"
+
     print("\n(b) Substitution types:", file=out_file)
-    print(f"  Latin -> Devanagari/Gujarati: {st['latin_to_indic']}", file=out_file)
-    print(f"  Digit sequence -> words: {st['digit_to_words']}", file=out_file)
-    print(f"  Other: {st['other']}", file=out_file)
+    print(_sub_line("Latin -> Devanagari/Gujarati", "latin_to_indic"), file=out_file)
+    print(_sub_line("Digit sequence -> words", "digit_to_words"), file=out_file)
+    print(_sub_line("orthographic (equal after lenient folding)", "orthographic"), file=out_file)
+    print(_sub_line("Other", "other"), file=out_file)
     print(f"  Total substitutions: {total_subs}", file=out_file)
 
     print("\n(c) Top 10 clips with the most deletions:", file=out_file)

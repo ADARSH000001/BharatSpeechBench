@@ -37,6 +37,7 @@ def get_warnings(
     coverage: float | None = None,
     max_segment_tokens: int | float | None = None,
     script_match: float | None = None,
+    language: str | None = None,
 ) -> list[str]:
     warnings = []
     if not hyp.strip():
@@ -53,7 +54,7 @@ def get_warnings(
     if isinstance(script_match, (int, float)) and not isinstance(script_match, bool) and script_match < 0.5:
         warnings.append(f"low script match ({script_match:.2f} < 0.50)")
 
-    flags = classify_clip_flags(ref, hyp, max_segment_tokens)
+    flags = classify_clip_flags(ref, hyp, max_segment_tokens, language=language)
     if flags["early_stop"]:
         warnings.append(
             f"early_stop (norm len ratio {flags['len_ratio_norm']:.2f} < {EARLY_STOP_RATIO_THRESHOLD})"
@@ -134,7 +135,7 @@ def show_transcripts(
             file=out_file,
         )
 
-        flags = classify_clip_flags(ref_raw, hyp_raw, max_seg_tok)
+        flags = classify_clip_flags(ref_raw, hyp_raw, max_seg_tok, language=lang)
         if flags["near_token_cap"]:
             print(
                 f"  INFO: near_token_cap (max_segment_tokens={flags['max_segment_tokens']} >= {NEAR_TOKEN_CAP_THRESHOLD})",
@@ -147,6 +148,7 @@ def show_transcripts(
             coverage=coverage if is_num_cov else None,
             max_segment_tokens=max_seg_tok,
             script_match=sm,
+            language=lang,
         )
         for w in warnings:
             print(f"  WARNING: {w}", file=out_file)

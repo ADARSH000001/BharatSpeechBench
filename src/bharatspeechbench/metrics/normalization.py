@@ -93,3 +93,10 @@ def normalize(text: str, lowercase: bool = True, ascii_digits: bool = True) -> s
     if lowercase:
         text = text.lower()          # only affects Latin letters (e.g. Hinglish in Roman script)
     return re.sub(r"\s+", " ", text).strip()
+
+
+def normalize_lenient_hi(text: str) -> str:
+    """Secondary lenient normalisation for Hindi only: normalize -> NFC -> drop nukta (U+093C) -> chandrabindu (U+0901) to anusvara (U+0902)."""
+    text = unicodedata.normalize("NFC", normalize(text))
+    text = text.replace("\u093c", "").replace("\u0901", "\u0902")
+    return re.sub(r"\s+", " ", text).strip()

@@ -588,3 +588,65 @@ def test_sensitivity_columns_and_paired_exclusion(tmp_path):
     main_sec, sens_sec = paired.split("#### hi (sensitivity: excluding early_stop/runaway clips)", 1)
     assert "| phone | 0.0% | 41.7% | +41.7% |" in main_sec and "| 3 |" in main_sec
     assert "| phone | 0.0% | 12.5% | +12.5% |" in sens_sec and "| 2 |" in sens_sec
+
+
+def test_hi_lenient_metrics_in_report(tmp_path):
+    t = np.arange(16000) / 16000
+    clips = []
+    # hi clip with nukta, precomposed U+095E, chandrabindu, and non-lenient vowel diff "पुलिस"
+    hi_ref = "काफ़ी \u0915\u093e\u095e\u0940 हँ पुलिस"
+    gu_ref = "આજે દિવસ છે"
+    for cid, lang, ref in [("h1", "hi", hi_ref), ("g1", "gu", gu_ref)]:
+        wav = tmp_path / "audio" / f"{cid}.wav"
+        wav.parent.mkdir(exist_ok=True)
+        sf.write(wav, 0.1 * np.sin(2 * np.pi * 240 * t), 16000)
+        clips.append(Clip(cid, f"audio/{cid}.wav", lang, "own", "test", ref, 1.0,
+                          sha256_file(wav), "own", True))
+    man = tmp_path / "m.jsonl"
+    write_manifest(clips, man)
+
+    class LenientProvider(ASRProvider):
+        name = "lenient"
+        model_id = "lenient-1"
+
+        def _transcribe(self, wav_path, language):
+            cid = Path(wav_path).stem
+            if cid == "h1":
+                # Only पुलिस->पोलिस remains an error under lenient; primary sees all 4 words differ
+                return "काफी काफी हं पोलिस", {}
+            return gu_ref, {}
+
+    run_dir = tmp_path / "lenient_run"
+    run_benchmark(
+        clips, LenientProvider(), run_dir, root=tmp_path, conditions=("clean",),
+        conditions_dir=tmp_path / "cond", manifest_path=man, progress=lambda *_: None,
+    )
+    paths = report_run(run_dir, clips, tmp_path / "results_lenient")
+
+    pc = pd.read_parquet(paths["per_clip"]).set_index("clip_id")
+    assert int(pc.loc["h1", "word_err_norm"]) == 4
+    assert int(pc.loc["h1", "word_err_lenient"]) == 1
+    assert pc.loc["h1", "wer_lenient"] == pytest.approx(0.25)
+    assert pc.loc["h1", "cer_lenient"] < pc.loc["h1", "char_err_norm"] / pc.loc["h1", "char_len_norm"]
+    assert pd.isna(pc.loc["g1", "word_err_lenient"])
+    assert pd.isna(pc.loc["g1", "wer_lenient"])
+    assert pd.isna(pc.loc["g1", "cer_lenient"])
+
+    s = pd.read_parquet(paths["summary"]).set_index("language")
+    assert s.loc["hi", "wer_norm"] == pytest.approx(1.0)
+    assert s.loc["hi", "wer_lenient"] == pytest.approx(0.25)
+    assert pd.isna(s.loc["gu", "wer_lenient"])
+    assert pd.isna(s.loc["gu", "cer_lenient"])
+
+    report_text = paths["report"].read_text(encoding="utf-8")
+    assert "secondary: ignores nukta and chandrabindu/anusvara spelling" in report_text
+    hdr = [ln for ln in report_text.splitlines() if ln.startswith("| language | condition |")][0]
+    cols = [c.strip() for c in hdr.split("|")[1:-1]]
+    idx = {name: i for i, name in enumerate(cols)}
+    assert idx["WER"] < idx["wer_lenient"] < idx["cer_lenient"]
+
+    hi_cells = [c.strip() for c in [ln for ln in report_text.splitlines() if ln.startswith("| hi | clean |")][0].split("|")[1:-1]]
+    assert hi_cells[idx["WER"]] == "100.0%"
+    assert hi_cells[idx["wer_lenient"]] == "25.0%"
+    gu_cells = [c.strip() for c in [ln for ln in report_text.splitlines() if ln.startswith("| gu | clean |")][0].split("|")[1:-1]]
+    assert gu_cells[idx["wer_lenient"]] == "" and gu_cells[idx["cer_lenient"]] == ""

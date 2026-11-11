@@ -147,12 +147,22 @@ def build_fleurs_manifest(
     seed: int = 0,
     root: str | Path = ".",
     source_dirs: dict[str, Path] | None = None,
+    exclude_manifest: str | Path | None = None,
 ) -> list[Clip]:
     root_path = Path(root).resolve()
     manifest_file = Path(manifest_path)
     if not manifest_file.is_absolute():
         manifest_file = root_path / manifest_file
     manifest_file.parent.mkdir(parents=True, exist_ok=True)
+
+    excluded_ids: set[str] = set()
+    if exclude_manifest is not None:
+        excl_file = Path(exclude_manifest)
+        if not excl_file.is_absolute() and not excl_file.is_file():
+            excl_file = root_path / excl_file
+        if not excl_file.is_file():
+            raise FileNotFoundError(f"exclude-manifest not found: {excl_file}")
+        excluded_ids = {c.id for c in load_manifest(excl_file)}
 
     existing_clips = load_manifest(manifest_file) if manifest_file.is_file() else []
     existing_ids = {c.id for c in existing_clips}
@@ -167,7 +177,27 @@ def build_fleurs_manifest(
 
         src_dir = source_dirs.get(lang) if source_dirs else None
         rows = get_fleurs_tsv(lang, split, lang_out / lang, source_dir=src_dir)
-        selected_rows = pick_clips_deterministically(rows, n, seed=seed)
+        all_valid = [r for r in rows if r["num_samples"] >= MIN_SAMPLES and r["raw_transcription"]]
+        if excluded_ids:
+            eligible_rows = [
+                r for r in all_valid
+                if f"fleurs-{lang}-{Path(r['filename']).stem}" not in excluded_ids
+            ]
+        else:
+            eligible_rows = all_valid
+        selected_rows = pick_clips_deterministically(eligible_rows, n, seed=seed)
+        if len(selected_rows) < n:
+            if excluded_ids:
+                print(
+                    f"Note [{lang}/{split}]: requested {n} clips, {len(selected_rows)} available "
+                    f"({len(all_valid)} eligible exist, {len(all_valid) - len(eligible_rows)} excluded); "
+                    f"using all {len(selected_rows)}."
+                )
+            else:
+                print(
+                    f"Note [{lang}/{split}]: requested {n} clips, only {len(selected_rows)} eligible exist; "
+                    f"using all {len(selected_rows)}."
+                )
         needed_filenames = {r["filename"] for r in selected_rows}
 
         extract_audio_clips(lang, split, needed_filenames, lang_audio_dir, source_dir=src_dir)
@@ -220,6 +250,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="Fixed seed for deterministic clip selection (default: 0)")
     parser.add_argument("--root", default=".",
                         help="Root folder relative to which manifest paths are stored (default: .)")
+    parser.add_argument("--exclude-manifest", default=None,
+                        help="Optional manifest JSONL file whose clip ids will be skipped")
 
     args = parser.parse_args(argv)
 
@@ -232,6 +264,7 @@ def main(argv: list[str] | None = None) -> int:
         manifest_path=args.manifest,
         seed=args.seed,
         root=args.root,
+        exclude_manifest=args.exclude_manifest,
     )
 
     manifest_file = Path(args.manifest)

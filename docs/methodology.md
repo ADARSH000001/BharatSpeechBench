@@ -28,6 +28,10 @@ All degraded conditions are SYNTHETIC:
 Unicode NFC; Devanagari and Gujarati digits to ASCII; punctuation incl. danda removed;
 Latin text lowercased; whitespace collapsed. Raw (unnormalised) scores are always reported too.
 Normalisation is tuned on the `dev` split only.
+- **Lenient Hindi metric (secondary, `hi` only)**: `wer_lenient` / `cer_lenient` apply `normalize()`,
+  then NFC, delete nukta (`U+093C`, which also covers precomposed nukta consonants because NFC
+  decomposes them), and map chandrabindu (`U+0901`) to anusvara (`U+0902`). Vowel lengths and
+  presence/absence of anusvara are left untouched. Primary WER stays first and unchanged.
 
 ## Protocol (what is sent to each model)
 - Every model gets the same 16 kHz mono PCM16 file per (clip, condition).
@@ -38,8 +42,13 @@ Normalisation is tuned on the `dev` split only.
 - Token-cap behaviour: Whisper's decoder limits generation to 224 tokens per 30 s window (`max_length = 448`). Because Whisper's byte-level BPE splits multi-byte Indic scripts (Hindi/Devanagari, Gujarati) into many tokens per word, long uninterrupted utterances can hit the 224-token cap mid-word without emitting an end-of-text or closing timestamp token. When that happens, `faster-whisper` fills in the full window/clip duration as the segment end time, so `coverage` (`last_segment_end_s / audio_seconds`) stays `1.00` and does **not** detect token-cap stops.
 - Decoding experiments (temperature fallback, VAD, chunking) are judged on `dev` clips only; the `test` split is used once per final configuration. Any decoding change gets a new run id and is reported next to the old one. Candidate decoding settings are chosen on `dev` by anomaly/truncation rate (`early_stop` / `runaway`; ties go to the simplest variant), **not** by WER.
 - Output quality flags (constants in `src/bharatspeechbench/benchmark/reporting.py`, computed on succeeded clips; clips are **never** excluded from primary WER/CER scores):
-  - `early_stop`: normalised hypothesis/reference character length ratio `< 0.8` (`EARLY_STOP_RATIO_THRESHOLD = 0.8`).
-  - `runaway`: normalised hypothesis/reference character length ratio `> 1.5` (`RUNAWAY_RATIO_THRESHOLD = 1.5`).
+  - `early_stop`: normalised hypothesis/reference length ratio `< 0.8` (`EARLY_STOP_RATIO_THRESHOLD = 0.8`).
+  - `runaway`: normalised hypothesis/reference length ratio `> 1.5` (`RUNAWAY_RATIO_THRESHOLD = 1.5`).
+  - Length-ratio basis by language: `hi` (and `hi-en`) use normalised **character** count, whereas `gu`
+    uses normalised **word** count with the same `< 0.8` / `> 1.5` thresholds. Why: Whisper frequently
+    outputs Devanagari or Latin script for Gujarati audio while references use Gujarati script;
+    character-length ratios across scripts reflect encoding/spelling length differences rather than
+    truncation or repetition, whereas word counts stay comparable across scripts.
   - `near_token_cap`: `max_segment_tokens >= 210` (`NEAR_TOKEN_CAP_THRESHOLD = 210`). Informational only (not a failure by itself and not listed in `Flagged clips` unless also flagged by ratio).
   `coverage` and `low coverage` (`coverage < 0.85`) are kept as extra columns to catch early timestamp stops, with the caveat above that `coverage` does not catch token-cap stops.
 - Secondary sensitivity checks (never replace primary WER): `wer_median` (median per-clip WER) and `wer_excl_flagged` (corpus WER after removing any clip flagged `early_stop` or `runaway` in **any** condition of that run, applied identically across every condition alongside `n_kept` and an analogous exclusion paired table).

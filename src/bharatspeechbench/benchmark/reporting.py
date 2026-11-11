@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from ..metrics.normalization import fold_devanagari_to_gujarati, normalize, script_stats
+from ..metrics.normalization import fold_devanagari_to_gujarati, normalize, normalize_lenient_hi, script_stats
 from ..metrics.numbers import number_accuracy, number_counts
 from ..metrics.wer import Counts, bootstrap_ci, corpus_rate, paired_bootstrap_diff, per_utterance
 from .manifest import Clip
@@ -29,11 +29,24 @@ def classify_clip_flags(
     reference: str | None,
     hypothesis: str | None,
     max_segment_tokens: int | float | None = None,
+    language: str | None = None,
 ) -> dict:
-    """Classify length-ratio anomalies (early_stop, runaway) and informational near_token_cap."""
-    norm_ref = normalize(reference or "")
-    norm_hyp = normalize(hypothesis or "")
-    len_ratio_norm = (len(norm_hyp) / len(norm_ref)) if len(norm_ref) > 0 else None
+    """Classify length-ratio anomalies (early_stop, runaway) and informational near_token_cap.
+
+    Uses normalised word-count ratio for Gujarati (`gu`, because ASR outputs in Devanagari or Latin
+    differ systematically in character length across scripts) and normalised character-count ratio
+    for Hindi (`hi`) and Hinglish (`hi-en`).
+    """
+    ref_str = "" if reference is None or pd.isna(reference) else str(reference)
+    hyp_str = "" if hypothesis is None or pd.isna(hypothesis) else str(hypothesis)
+    norm_ref = normalize(ref_str)
+    norm_hyp = normalize(hyp_str)
+    if language == "gu":
+        ref_words = norm_ref.split()
+        hyp_words = norm_hyp.split()
+        len_ratio_norm = (len(hyp_words) / len(ref_words)) if ref_words else None
+    else:
+        len_ratio_norm = (len(norm_hyp) / len(norm_ref)) if len(norm_ref) > 0 else None
 
     if (
         isinstance(max_segment_tokens, (int, float))
@@ -100,7 +113,7 @@ def per_clip_table(run_dir: str | Path, clips: list[Clip]) -> pd.DataFrame:
                     f"char_len_{tag}": ch.ref_len,
                 })
             nc = number_counts(reference, hyp)
-            flags = classify_clip_flags(reference, hyp, max_seg_tokens)
+            flags = classify_clip_flags(reference, hyp, max_seg_tokens, language=r["language"])
             sm, dom = script_stats(hyp, r["language"])
             base.update(
                 num_matched=nc.matched,
@@ -124,6 +137,28 @@ def per_clip_table(run_dir: str | Path, clips: list[Clip]) -> pd.DataFrame:
                 )
             else:
                 base.update(word_err_folded=None, word_len_folded=None, char_err_folded=None, char_len_folded=None)
+            if r["language"] == "hi":
+                len_ref = normalize_lenient_hi(reference)
+                len_hyp = normalize_lenient_hi(hyp)
+                wl = per_utterance([len_ref], [len_hyp], "word", False)[0]
+                chl = per_utterance([len_ref], [len_hyp], "char", False)[0]
+                base.update(
+                    word_err_lenient=wl.errors,
+                    word_len_lenient=wl.ref_len,
+                    char_err_lenient=chl.errors,
+                    char_len_lenient=chl.ref_len,
+                    wer_lenient=(wl.errors / wl.ref_len) if wl.ref_len > 0 else None,
+                    cer_lenient=(chl.errors / chl.ref_len) if chl.ref_len > 0 else None,
+                )
+            else:
+                base.update(
+                    word_err_lenient=None,
+                    word_len_lenient=None,
+                    char_err_lenient=None,
+                    char_len_lenient=None,
+                    wer_lenient=None,
+                    cer_lenient=None,
+                )
         else:
             base.update(
                 len_ratio_norm=None,
@@ -136,13 +171,30 @@ def per_clip_table(run_dir: str | Path, clips: list[Clip]) -> pd.DataFrame:
                 word_len_folded=None,
                 char_err_folded=None,
                 char_len_folded=None,
+                word_err_lenient=None,
+                word_len_lenient=None,
+                char_err_lenient=None,
+                char_len_lenient=None,
+                wer_lenient=None,
+                cer_lenient=None,
             )
         rows.append(base)
     df = pd.DataFrame(rows)
-    for col in ("coverage", "len_ratio_norm", "script_match"):
+    for col in ("coverage", "len_ratio_norm", "script_match", "wer_lenient", "cer_lenient"):
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce").astype(float)
-    for col in ("total_tokens", "max_segment_tokens", "word_err_folded", "word_len_folded", "char_err_folded", "char_len_folded"):
+    for col in (
+        "total_tokens",
+        "max_segment_tokens",
+        "word_err_folded",
+        "word_len_folded",
+        "char_err_folded",
+        "char_len_folded",
+        "word_err_lenient",
+        "word_len_lenient",
+        "char_err_lenient",
+        "char_len_lenient",
+    ):
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
     for col in ("early_stop", "runaway", "near_token_cap"):
@@ -233,6 +285,21 @@ def summary_table(per_clip: pd.DataFrame) -> pd.DataFrame:
             else:
                 row["wer_folded"] = float("nan")
                 row["cer_folded"] = float("nan")
+            if (
+                lang == "hi"
+                and "word_err_lenient" in ok.columns
+                and ok["word_len_lenient"].notna().any()
+                and ok["word_len_lenient"].sum() > 0
+            ):
+                row["wer_lenient"] = float(ok["word_err_lenient"].sum() / ok["word_len_lenient"].sum())
+                row["cer_lenient"] = (
+                    float(ok["char_err_lenient"].sum() / ok["char_len_lenient"].sum())
+                    if ok["char_len_lenient"].sum() > 0
+                    else float("nan")
+                )
+            else:
+                row["wer_lenient"] = float("nan")
+                row["cer_lenient"] = float("nan")
         else:
             row["word_sub_norm"] = 0
             row["word_del_norm"] = 0
@@ -242,6 +309,8 @@ def summary_table(per_clip: pd.DataFrame) -> pd.DataFrame:
             row["script_match_mean"] = float("nan")
             row["wer_folded"] = float("nan")
             row["cer_folded"] = float("nan")
+            row["wer_lenient"] = float("nan")
+            row["cer_lenient"] = float("nan")
         out.append(row)
     df = pd.DataFrame(out)
     df["_c"] = df["condition"].map({c: i for i, c in enumerate(CONDITION_ORDER)}).fillna(99)
@@ -323,14 +392,15 @@ def markdown_report(run_id: str, summary: pd.DataFrame, config: dict,
     lines += [
         "WER/CER are corpus-level (normalised unless marked raw), with a bootstrap 95% interval over clips. Primary WER includes all succeeded clips and is shown first.",
         "Sensitivity columns (`wer_median`, `wer_excl_flagged`, `n_kept`): secondary checks; `wer_excl_flagged` drops any clip flagged `early_stop` or `runaway` in any condition identically across all conditions (`near_cap` is informational only).",
+        "`wer_lenient` / `cer_lenient` (Hindi only; secondary: ignores nukta and chandrabindu/anusvara spelling).",
         "`wer_folded` / `cer_folded` (Gujarati only; approximate: ignores script, not spelling conventions).",
         "Small clip counts give wide intervals: do not read small gaps as real differences.", "",
-        "| language | condition | clips | failed | empty | S | D | I | WER | WER 95% CI | WER raw | CER | wer_median (sensitivity) | wer_excl_flagged (sensitivity) | n_kept (sensitivity) | wer_folded | cer_folded | script match | number acc | RTF | low coverage | early_stop | runaway | near_cap |",
-        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+        "| language | condition | clips | failed | empty | S | D | I | WER | WER 95% CI | WER raw | CER | wer_median (sensitivity) | wer_excl_flagged (sensitivity) | n_kept (sensitivity) | wer_lenient | cer_lenient | wer_folded | cer_folded | script match | number acc | RTF | low coverage | early_stop | runaway | near_cap |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for _, r in summary.iterrows():
         if r["n_clips"] == 0:
             lines.append(
-                f"| {r['language']} | {r['condition']} | 0 | {r['n_failed']} | 0 | 0 | 0 | 0 | n/a | | | | n/a | n/a | 0 | | | n/a | | | "
+                f"| {r['language']} | {r['condition']} | 0 | {r['n_failed']} | 0 | 0 | 0 | 0 | n/a | | | | n/a | n/a | 0 | | | | | n/a | | | "
                 f"{r.get('n_low_coverage', 0)} | {r.get('early_stop', 0)} | {r.get('runaway', 0)} | {r.get('near_cap', 0)} |"
             )
             continue
@@ -340,6 +410,7 @@ def markdown_report(run_id: str, summary: pd.DataFrame, config: dict,
             f"{_pct(r['wer_norm'])} | {_pct(r['wer_norm_lo'])} to {_pct(r['wer_norm_hi'])} | "
             f"{_pct(r['wer_raw'])} | {_pct(r['cer_norm'])} | "
             f"{_pct(r.get('wer_median'))} | {_pct(r.get('wer_excl_flagged'))} | {r.get('n_clips_excl', r['n_clips'])} | "
+            f"{_pct_or_blank(r.get('wer_lenient'))} | {_pct_or_blank(r.get('cer_lenient'))} | "
             f"{_pct_or_blank(r.get('wer_folded'))} | {_pct_or_blank(r.get('cer_folded'))} | "
             f"{_pct(r.get('script_match_mean'))} | {_pct(r['number_acc'])} | {r['rtf_median']:.2f} | "
             f"{r.get('n_low_coverage', 0)} | {r.get('early_stop', 0)} | {r.get('runaway', 0)} | {r.get('near_cap', 0)} |")
@@ -359,7 +430,7 @@ def markdown_report(run_id: str, summary: pd.DataFrame, config: dict,
             for _, r in ok.iterrows():
                 max_tok = r.get("max_segment_tokens")
                 if "reference" in r and pd.notna(r["reference"]):
-                    fl = classify_clip_flags(str(r["reference"]), r.get("hypothesis"), max_tok)
+                    fl = classify_clip_flags(str(r["reference"]), r.get("hypothesis"), max_tok, language=r.get("language"))
                 else:
                     lr = r.get("len_ratio_norm")
                     ratio_val = float(lr) if lr is not None and pd.notna(lr) else None

@@ -254,3 +254,106 @@ def test_build_fleurs_manifest_dev_split_offline(tmp_path, monkeypatch):
     assert all(c.split == "dev" for c in loaded)
     assert all(c.source == "fleurs" for c in loaded)
     assert verify_audio_hashes(loaded, root=tmp_path) == []
+
+
+def test_build_fleurs_manifest_n_exceeds_available_and_exclude_manifest(tmp_path, capsys, monkeypatch):
+    import tarfile
+    import numpy as np
+    import soundfile as sf
+    import scripts.build_fleurs_manifest as bfm
+
+    sr = 16000
+    raw_dir = tmp_path / "remote"
+    raw_dir.mkdir()
+    tsv_files = {}
+    tar_files = {}
+    for lang, code in (("hi", "hi_in"), ("gu", "gu_in")):
+        tsv_lines = []
+        tar_path = raw_dir / f"{code}_test.tar.gz"
+        with tarfile.open(tar_path, "w:gz") as tar:
+            # clip_0 short (1.5s), clips 1..4 eligible (3.5s) -> 4 eligible per language
+            for i in range(5):
+                n_samples = 24000 if i == 0 else 56000
+                wav_path = raw_dir / f"{lang}_clip_{i}.wav"
+                t = np.arange(n_samples) / sr
+                sf.write(wav_path, 0.1 * np.sin(2 * np.pi * (200 + 30 * i) * t), sr, subtype="PCM_16")
+                tar.add(wav_path, arcname=f"test/{wav_path.name}")
+                raw_text = f"हिन्दी वाक्य {i}।" if lang == "hi" else f"ગુજરાતી વાક્ય {i}."
+                tsv_lines.append(f"{3000 + i}\t{wav_path.name}\t{raw_text}\t{raw_text}\t...\t{n_samples}\tFEMALE")
+        tsv_path = raw_dir / f"{code}_test.tsv"
+        tsv_path.write_text("\n".join(tsv_lines) + "\n", encoding="utf-8")
+        tsv_files[code] = tsv_path
+        tar_files[code] = tar_path
+
+    def fake_download(url: str):
+        for code in ("hi_in", "gu_in"):
+            if f"/data/{code}/test.tsv" in url:
+                return tsv_files[code].open("rb")
+            if f"/data/{code}/audio/test.tar.gz" in url:
+                return tar_files[code].open("rb")
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    monkeypatch.setattr(bfm, "_download_stream", fake_download)
+
+    # 1. Request n=20 (> 4 available): fails soft, picks all 4 per lang deterministically, prints counts
+    rc1 = bfm.main([
+        "--lang", "hi", "gu",
+        "--split", "test",
+        "--n", "20",
+        "--seed", "7",
+        "--out", "downloads/all",
+        "--manifest", "manifests/all.jsonl",
+        "--root", str(tmp_path),
+    ])
+    assert rc1 == 0
+    out1 = capsys.readouterr().out
+    assert "requested 20 clips" in out1 and "4 eligible exist" in out1
+    all_clips = load_manifest(tmp_path / "manifests" / "all.jsonl")
+    assert len(all_clips) == 8  # 4 hi + 4 gu (short clip_0 excluded)
+
+    # Same run with different seed still yields exact same deterministic order when using all 4
+    bfm.main([
+        "--lang", "hi", "gu",
+        "--split", "test",
+        "--n", "20",
+        "--seed", "99",
+        "--out", "downloads/all2",
+        "--manifest", "manifests/all2.jsonl",
+        "--root", str(tmp_path),
+    ])
+    capsys.readouterr()
+    assert [c.id for c in load_manifest(tmp_path / "manifests" / "all2.jsonl")] == [c.id for c in all_clips]
+
+    # 2. Build a 2-clip-per-lang pilot manifest, then build expanded batch with --exclude-manifest
+    assert bfm.main([
+        "--lang", "hi", "gu",
+        "--split", "test",
+        "--n", "2",
+        "--seed", "0",
+        "--out", "downloads/pilot",
+        "--manifest", "manifests/pilot.jsonl",
+        "--root", str(tmp_path),
+    ]) == 0
+    capsys.readouterr()
+    pilot_clips = load_manifest(tmp_path / "manifests" / "pilot.jsonl")
+    pilot_ids = {c.id for c in pilot_clips}
+    assert len(pilot_ids) == 4
+
+    # Exclude pilot, request n=10 -> only 2 remaining eligible per language -> uses all remaining 2
+    assert bfm.main([
+        "--lang", "hi", "gu",
+        "--split", "test",
+        "--n", "10",
+        "--seed", "0",
+        "--out", "downloads/rest",
+        "--manifest", "manifests/rest.jsonl",
+        "--exclude-manifest", "manifests/pilot.jsonl",
+        "--root", str(tmp_path),
+    ]) == 0
+    out_rest = capsys.readouterr().out
+    assert "requested 10 clips, 2 available" in out_rest and "2 excluded" in out_rest
+    rest_clips = load_manifest(tmp_path / "manifests" / "rest.jsonl")
+    rest_ids = {c.id for c in rest_clips}
+    assert len(rest_ids) == 4
+    assert pilot_ids.isdisjoint(rest_ids)
+    assert pilot_ids | rest_ids == {c.id for c in all_clips}
