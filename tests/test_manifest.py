@@ -139,7 +139,7 @@ def test_build_fleurs_manifest_offline(tmp_path):
     out_audio = tmp_path / "downloads" / "fleurs"
 
     # Build manifest selecting 2 clips per language
-    clips = build_fleurs_manifest(
+    build_fleurs_manifest(
         languages=("hi", "gu"),
         split="test",
         n=2,

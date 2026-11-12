@@ -89,7 +89,7 @@ def test_get_model_revision_from_cache(tmp_path):
 
 def test_git_dirty_detection(monkeypatch, tmp_path):
     import subprocess
-    from bharatspeechbench.utils.reproducibility import _git_dirty, capture_environment
+    from bharatspeechbench.utils.reproducibility import _git_dirty
     from bharatspeechbench.benchmark.reporting import markdown_report
     import pandas as pd
 

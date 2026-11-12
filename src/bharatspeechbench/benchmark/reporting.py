@@ -16,7 +16,7 @@ import pandas as pd
 
 from ..metrics.normalization import fold_devanagari_to_gujarati, normalize, normalize_lenient_hi, script_stats
 from ..metrics.numbers import number_accuracy, number_counts
-from ..metrics.wer import Counts, bootstrap_ci, corpus_rate, paired_bootstrap_diff, per_utterance
+from ..metrics.wer import Counts, bootstrap_ci, paired_bootstrap_diff, per_utterance
 from .manifest import Clip
 
 CONDITION_ORDER = ["clean", "phone", "phone_noise_20", "phone_noise_10", "phone_noise_5"]
