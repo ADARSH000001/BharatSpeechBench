@@ -4,7 +4,7 @@ Decisions marked OPEN are not settled yet. Fill them in before quoting any numbe
 
 ## Experiment levels
 1. `smoke test`: 3 clips, pipeline check only; not a benchmark result.
-2. `pilot`: ~30 clips per language (e.g. 10 dev, 20 test); small sample with wide confidence intervals.
+2. `pilot`: 30 test clips per language plus a separate 10-clip dev set per language; small sample with wide confidence intervals.
 3. `expanded`: many speakers across dialects and acoustic conditions for production comparisons.
 
 ## Conditions

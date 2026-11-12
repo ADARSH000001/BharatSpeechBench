@@ -3,7 +3,7 @@
 Audio is never committed. Commit the manifest, checksums and instructions to re-create the data.
 
 - `data/manifests/manifest.jsonl`: ONE combined manifest, one clip per line, with a `language` field. You create it.
-- `data/manifests/example.jsonl`: schema example only (fake checksums, no audio). Copy a line and fill in your own.
+- `data/manifests/example.jsonl`: schema example only (fake all-zero checksums, `"source": "example"`, no audio); copy a line, fill in your own audio/checksum, and set `"source": "own"` with `"speaker_consent": true` for real own recordings.
 - `data/own_recordings/`, `data/downloads/`, `data/conditions/`: local audio, git-ignored.
   `conditions/` holds generated clean / phone / phone_noise copies (one subfolder per seed + noise file) and can always be re-created with `bsb simulate`.
 

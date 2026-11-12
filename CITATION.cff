@@ -1,7 +1,7 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
 title: "BharatSpeechBench"
-abstract: "Benchmark of Indian-language speech recognition (Hindi, Gujarati, Hinglish) under clean, telephone-quality and noisy audio."
+abstract: "Benchmark of Indian-language speech recognition (Hindi and Gujarati so far; Hinglish planned (no clips yet)) under clean, telephone-quality and noisy audio."
 authors:
   - family-names: "Jain"
     given-names: "Adarsh"

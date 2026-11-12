@@ -1,9 +1,9 @@
 # BharatSpeechBench
 
-Benchmark Indian-language speech recognition (Hindi, Gujarati, Hinglish) under clean,
+Benchmark Indian-language speech recognition (Hindi and Gujarati so far; Hinglish planned (no clips yet)) under clean,
 telephone-quality and noisy audio. Local models only: no API keys, no paid services.
 
-**Status: Pipeline complete; 37+ tests pass locally; Whisper not yet run on real audio; no published results.**
+**Status: Pilot run done on 60 FLEURS test clips (30 `hi`, 30 `gu`) with `whisper-small`; no published conclusions yet; Gujarati baseline unusable on dev (see `docs/decoding_experiment_dev.md`); Hinglish has no data yet.**
 
 ## Quick start
 ```bash
@@ -52,6 +52,10 @@ bsb run data/manifests/pilot.jsonl --noise data/noise/STRAFFIC.wav --run-id whis
 bsb report results/raw/whisper-small-straffic-v1 --manifest data/manifests/pilot.jsonl
 ```
 
+## Data attribution
+- **Google FLEURS** (`google/fleurs` on Hugging Face; Conneau et al., 2022): Hindi (`hi_in`) and Gujarati (`gu_in`), licensed under CC BY 4.0.
+- **DEMAND** (Zenodo record `1227121`, CC BY-SA 3.0; environments `STRAFFIC`, `PCAFETER`, `DKITCHEN`): environmental noise corpus.
+
 ## Layout
 ```
 app/                      Streamlit dashboard (read-only)
@@ -68,9 +72,9 @@ tests/  docs/
 ```
 
 ## Next to build
-1. Build the FLEURS Hindi/Gujarati manifest using `scripts/build_fleurs_manifest.py`, collect your own consented Hinglish clips with digits, and provide a licensed noise file.
-2. First real Whisper run on your GPU; commit the report in `results/reports/`.
-3. IndicConformer provider, same interface, same conditions.
+1. Compare `whisper-medium` and `large-v3` on the dev set.
+2. Record ~30 consented Hinglish clips with digits.
+3. IndicConformer provider, same interface and conditions.
 
 ## Limits
 - Small test sets give wide confidence intervals: this is a pilot study, not a language benchmark.
