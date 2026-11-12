@@ -1,12 +1,27 @@
 name: tests
-on: [push, pull_request]
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   unit:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: { python-version: "3.11" }
-      - run: sudo apt-get update && sudo apt-get install -y ffmpeg libsndfile1
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install ffmpeg (with retries; fail fast instead of hanging)
+        timeout-minutes: 5
+        run: |
+          APT="sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20"
+          $APT update
+          $APT install -y --no-install-recommends ffmpeg
+          ffmpeg -version | head -1
       - run: pip install -e ".[dev]"
       - run: pytest -q
